@@ -62,9 +62,9 @@ class FaceParsing():
         net = BiSeNet(resnet_path)
         if torch.cuda.is_available():
             net.cuda()
-            net.load_state_dict(torch.load(model_pth)) 
-        else:
-            net.load_state_dict(torch.load(model_pth, map_location=torch.device('cpu')))
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            net.to("mps")
+        net.load_state_dict(torch.load(model_pth, map_location=torch.device('cpu')))
         net.eval()
         return net
 
@@ -84,6 +84,8 @@ class FaceParsing():
             img = self.preprocess(image)
             if torch.cuda.is_available():
                 img = torch.unsqueeze(img, 0).cuda()
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                img = torch.unsqueeze(img, 0).to("mps")
             else:
                 img = torch.unsqueeze(img, 0)
             out = self.net(img)[0]

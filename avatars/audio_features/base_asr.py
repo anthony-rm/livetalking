@@ -23,6 +23,7 @@ from queue import Queue
 from numpy.typing import NDArray
 import torch.multiprocessing as mp
 
+from utils.logger import logger
 from avatars.base_avatar import BaseAvatar,AudioFrameData
 
 
@@ -35,7 +36,13 @@ class BaseASR:
         self.sample_rate = 16000
         self.chunk = self.sample_rate // (opt.fps*2) # 320 samples per chunk (20ms * 16000 / 1000)
         self.queue:Queue[AudioFrameData] = Queue()
-        self.output_queue:Queue[AudioFrameData] = Queue()
+        # Bounded output_queue: unbounded growth under load would OOM the
+        # server. batch_size*4 gives the inference thread slack to drain while
+        # still applying backpressure. Also large enough for warm_up() to enqueue
+        # stride_left+stride_right frames without blocking (a too-small bound
+        # would deadlock warm_up before any consumer thread is running).
+        self.output_queue:Queue[AudioFrameData] = Queue(
+            maxsize=max(opt.batch_size*4, opt.l + opt.r + opt.batch_size*2))
 
         self.batch_size = opt.batch_size
 
@@ -83,6 +90,27 @@ class BaseASR:
 
     def run_step(self):
         pass
+
+    def run_step_loop(self, quit_event):
+        """ASR worker thread body: call run_step() in a loop until quit_event is set.
+
+        Fix 3: moves ASR (whisper/mel/hubert) compute out of the render loop so
+        feature extraction overlaps with frame production. On a fatal exception,
+        log and set quit_event so the sibling threads tear down together.
+        """
+        logger.info('ASR worker thread start')
+        while not quit_event.is_set():
+            try:
+                self.run_step()
+            except Exception:
+                logger.exception("ASR run_step error; stopping ASR worker")
+                quit_event.set()
+                # Cascade the stop to the render loop so all threads shut down.
+                if hasattr(self, 'parent') and hasattr(self.parent, 'quit_event'):
+                    self.parent.quit_event.set()
+                break
+            time.sleep(0.001)
+        logger.info('ASR worker thread stop')
 
     def get_next_feat(self,block,timeout):        
         return self.feat_queue.get(block,timeout)

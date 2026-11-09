@@ -63,12 +63,34 @@ class RTCManager:
         pc.addTrack(player.video)
 
         # 设置编解码器偏好
+        #
+        # H.264 需要 SDP 中携带 sprop-parameter-sets (SPS/PPS) 才能被解码，
+        # 而 aiortc 不会生成该参数 —— Chrome 宽容可以接受，Firefox 则无法解码，
+        # 表现为已连接但视频全黑。VP8 无需任何额外 SDP 参数，所有浏览器均可解码，
+        # 因此默认优先使用 VP8。
+        codec_order = [c.strip().upper() for c in
+                       getattr(self.opt, 'video_codec', 'vp8').split(',') if c.strip()]
         capabilities = RTCRtpSender.getCapabilities("video")
-        preferences = list(filter(lambda x: x.name == "H264", capabilities.codecs))
-        preferences += list(filter(lambda x: x.name == "VP8", capabilities.codecs))
-        preferences += list(filter(lambda x: x.name == "rtx", capabilities.codecs))
-        transceiver = pc.getTransceivers()[1]
-        transceiver.setCodecPreferences(preferences)
+        preferences = []
+        for name in codec_order:
+            for c in capabilities.codecs:
+                # match on the codec family; keep every profile variant
+                if c.name.upper() != name:
+                    continue
+                if c not in preferences:
+                    preferences.append(c)
+        # rtx 始终附加在末尾
+        for c in capabilities.codecs:
+            if c.name == "rtx" and c not in preferences:
+                preferences.append(c)
+        if preferences:
+            # 视频 transceiver 是索引 1（索引 0 为音频）
+            video_transceiver = next(
+                (t for t in pc.getTransceivers() if t.kind == "video"), None)
+            if video_transceiver is not None:
+                video_transceiver.setCodecPreferences(preferences)
+                logger.info("Video codec preference: %s",
+                            ",".join(c.name for c in preferences))
 
         await pc.setRemoteDescription(offer)
         answer = await pc.createAnswer()
@@ -89,11 +111,29 @@ class RTCManager:
                 content_type="application/json",
                 text=json.dumps({"code": -1, "msg": str(e)}),
             )
+        except Exception as e:
+            # e.g. model lazy-load failure — return JSON so browser clients
+            # surface a readable error instead of a JSON.parse exception.
+            logger.exception("offer failed")
+            return web.Response(
+                status=503,
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": str(e)}),
+            )
         logger.info('offer sessionid=%s', sessionid)
 
-        pc = await self._create_pc_and_answer(
-            session_manager.get_session(sessionid), sessionid, offer
-        )
+        try:
+            pc = await self._create_pc_and_answer(
+                session_manager.get_session(sessionid), sessionid, offer
+            )
+        except Exception:
+            logger.exception("offer SDP exchange failed")
+            session_manager.remove_session(sessionid)
+            return web.Response(
+                status=503,
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": "SDP exchange failed"}),
+            )
 
         return web.Response(
             content_type="application/json",
@@ -124,6 +164,13 @@ class RTCManager:
             sessionid = await session_manager.create_session(params, sessionid=client_sid)
         except MaxSessionError as e:
             logger.warning("Rejecting whep: %s", e)
+            return web.Response(
+                status=503,
+                content_type="text/plain",
+                text=str(e),
+            )
+        except Exception as e:
+            logger.exception("whep failed")
             return web.Response(
                 status=503,
                 content_type="text/plain",

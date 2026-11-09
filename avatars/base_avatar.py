@@ -83,7 +83,10 @@ class BaseAvatar:
         self.__loadcustom()
 
         self.batch_size = opt.batch_size
-        self.res_frame_queue = Queue(self.batch_size*2)
+        # Bounded res_frame_queue: unbounded growth would OOM the server under
+        # load. batch_size*4 gives the process thread slack to drain while
+        # applying backpressure to the inference producer.
+        self.res_frame_queue = Queue(self.batch_size*4)
         self.render_event = Event()
 
         _tts_modules = {
@@ -335,49 +338,80 @@ class BaseAvatar:
         # infernum = 0
         logger.info('start inference')
         while not quit_event.is_set():
-            starttime = time.perf_counter()
-            audiofeat_batch = []
             try:
-                audiofeat_batch = self.asr.feat_queue.get(block=True, timeout=1)
-            except queue.Empty:
-                continue
+                starttime = time.perf_counter()
+                audiofeat_batch = []
+                try:
+                    audiofeat_batch = self.asr.feat_queue.get(block=True, timeout=1)
+                except queue.Empty:
+                    continue
+
+                is_all_silence = True
+                audio_frames: list[AudioFrameData] = []
+                for _ in range(self.batch_size * 2):
+                    try:
+                        # A blocking get() with no timeout here is a shutdown
+                        # deadlock: if the ASR feature producer (render thread)
+                        # stops while output_queue is dry, this thread blocks
+                        # forever and render()'s infer_thread.join() never returns,
+                        # freezing the whole server. Time out and treat it as
+                        # silence so shutdown can proceed.
+                        audioframe:AudioFrameData = self.asr.output_queue.get(block=True, timeout=1)
+                    except queue.Empty:
+                        audioframe = AudioFrameData(
+                            data=np.zeros(self.asr.chunk, dtype=np.float32),
+                            type=1, userdata={})
+                    if audioframe.type == 0:
+                        is_all_silence = False               
+                    audio_frames.append(audioframe)
+
+                 # 检测状态变化
+                current_speaking = not is_all_silence
+
+                if is_all_silence: #全为静音数据，只需要取fullimg，不需要推理
+                    for i in range(self.batch_size):
+                        idx = mirror_index(length, index)
+                        self.res_frame_queue.put((None, audio_frames[i*2:i*2+2], idx))
+                        index = index + 1
+                else:
+                    if current_speaking and not last_speaking and self.custom_index.get(1) is not None: #从静音到说话切换,并且有自定义静态视频
+                        index = 0
+                    t = time.perf_counter()
+
+                    try:
+                        pred = self.inference_batch(index, audiofeat_batch)
+                    except Exception:
+                        # A crash here (bad crop, shape mismatch, MPS op) used to
+                        # kill the inference thread silently; with no producer the
+                        # pipeline stalls and the server hangs. Log it, synthesise a
+                        # silence batch so the pipeline stays alive, and keep going
+                        # instead of dying.
+                        logger.exception("inference_batch failed; skipping batch")
+                        pred = [None] * self.batch_size
+
+                    counttime += (time.perf_counter() - t)
+                    count += self.batch_size
+                    if count >= 100:
+                        logger.info(f"------actual avg infer fps:{count/counttime:.4f}")
+                        count = 0
+                        counttime = 0
+                    for i, res_frame in enumerate(pred):
+                        self.res_frame_queue.put((res_frame, audio_frames[i*2:i*2+2], mirror_index(length, index)))
+                        index = index + 1
                 
-            is_all_silence = True
-            audio_frames: list[AudioFrameData] = []
-            for _ in range(self.batch_size * 2):
-                audioframe:AudioFrameData = self.asr.output_queue.get()
-                if audioframe.type == 0:
-                    is_all_silence = False               
-                audio_frames.append(audioframe)
-
-             # 检测状态变化
-            current_speaking = not is_all_silence
-
-            if is_all_silence: #全为静音数据，只需要取fullimg，不需要推理
-                for i in range(self.batch_size):
-                    idx = mirror_index(length, index)
-                    self.res_frame_queue.put((None, audio_frames[i*2:i*2+2], idx))
-                    index = index + 1
-            else:
-                if current_speaking and not last_speaking and self.custom_index.get(1) is not None: #从静音到说话切换,并且有自定义静态视频
-                    index = 0
-                t = time.perf_counter()
-
-                pred = self.inference_batch(index, audiofeat_batch)
-
-                counttime += (time.perf_counter() - t)
-                count += self.batch_size
-                if count >= 100:
-                    logger.info(f"------actual avg infer fps:{count/counttime:.4f}")
-                    count = 0
-                    counttime = 0
-                for i, res_frame in enumerate(pred):
-                    self.res_frame_queue.put((res_frame, audio_frames[i*2:i*2+2], mirror_index(length, index)))
-                    index = index + 1
-                    
-            if current_speaking != last_speaking:
-                logger.info(f"inference 状态切换：{'说话' if last_speaking else '静音'} → {'说话' if current_speaking else '静音'}")
-                last_speaking = current_speaking         
+                if current_speaking != last_speaking:
+                    logger.info(f"inference 状态切换：{'说话' if last_speaking else '静音'} → {'说话' if current_speaking else '静音'}")
+                    last_speaking = current_speaking
+            except Exception:
+                # If any unexpected exception escapes (other than the handled
+                # queue.Empty / inference_batch cases), the thread would die
+                # silently and the pipeline stalls. Log, set the quit_event so the
+                # render loop and sibling threads tear down together.
+                logger.exception("inference thread error; stopping inference")
+                quit_event.set()
+                if hasattr(self, 'quit_event'):
+                    self.quit_event.set()
+                break
         logger.info('baseavatar inference thread stop')
 
     def process_frames(self,quit_event):
@@ -398,70 +432,80 @@ class BaseAvatar:
                 res_frame,audio_frames,idx = self.res_frame_queue.get(block=True, timeout=1)
             except queue.Empty:
                 continue
-            
-            # 检测状态变化
-            current_speaking = not (audio_frames[0].type!=0 and audio_frames[1].type!=0)
-            if current_speaking != _last_speaking:
-                logger.info(f"状态切换：{'说话' if _last_speaking else '静音'} → {'说话' if current_speaking else '静音'}")
-                _transition_start = time.time()
-            _last_speaking = current_speaking
 
-            if audio_frames[0].type!=0 and audio_frames[1].type!=0: #全为静音数据，只需要取fullimg
-                self.speaking = False
-                audiotype = audio_frames[0].type
-                if self.custom_index.get(audiotype) is not None: #有自定义视频
-                    mirindex = mirror_index(len(self.custom_img_cycle[audiotype]),self.custom_index[audiotype])
-                    target_frame = self.custom_img_cycle[audiotype][mirindex]
-                    self.custom_index[audiotype] += 1
-                else:
-                    target_frame = self.frame_list_cycle[idx]
-                
-                if enable_transition:
-                    # 说话→静音过渡
-                    if time.time() - _transition_start < _transition_duration and _last_speaking_frame is not None:
-                        alpha = min(1.0, (time.time() - _transition_start) / _transition_duration)
-                        combine_frame = cv2.addWeighted(_last_speaking_frame, 1-alpha, target_frame, alpha, 0)
+            try:
+                # 检测状态变化
+                current_speaking = not (audio_frames[0].type!=0 and audio_frames[1].type!=0)
+                if current_speaking != _last_speaking:
+                    logger.info(f"状态切换：{'说话' if _last_speaking else '静音'} → {'说话' if current_speaking else '静音'}")
+                    _transition_start = time.time()
+                _last_speaking = current_speaking
+
+                if audio_frames[0].type!=0 and audio_frames[1].type!=0: #全为静音数据，只需要取fullimg
+                    self.speaking = False
+                    audiotype = audio_frames[0].type
+                    if self.custom_index.get(audiotype) is not None: #有自定义视频
+                        mirindex = mirror_index(len(self.custom_img_cycle[audiotype]),self.custom_index[audiotype])
+                        target_frame = self.custom_img_cycle[audiotype][mirindex]
+                        self.custom_index[audiotype] += 1
+                    else:
+                        target_frame = self.frame_list_cycle[idx]
+                    
+                    if enable_transition:
+                        # 说话→静音过渡
+                        if time.time() - _transition_start < _transition_duration and _last_speaking_frame is not None:
+                            alpha = min(1.0, (time.time() - _transition_start) / _transition_duration)
+                            combine_frame = cv2.addWeighted(_last_speaking_frame, 1-alpha, target_frame, alpha, 0)
+                        else:
+                            combine_frame = target_frame
+                        # 缓存静音帧
+                        _last_silent_frame = combine_frame.copy()
                     else:
                         combine_frame = target_frame
-                    # 缓存静音帧
-                    _last_silent_frame = combine_frame.copy()
                 else:
-                    combine_frame = target_frame
-            else:
-                self.speaking = True
-                try:
-                    current_frame = self.paste_back_frame(res_frame,idx)
-                except Exception as e:
-                    logger.warning(f"paste_back_frame error: {e}")
-                    continue
-                if enable_transition:
-                    # 静音→说话过渡
-                    if time.time() - _transition_start < _transition_duration and _last_silent_frame is not None:
-                        alpha = min(1.0, (time.time() - _transition_start) / _transition_duration)
-                        combine_frame = cv2.addWeighted(_last_silent_frame, 1-alpha, current_frame, alpha, 0)
+                    self.speaking = True
+                    try:
+                        current_frame = self.paste_back_frame(res_frame,idx)
+                    except Exception as e:
+                        logger.warning(f"paste_back_frame error: {e}")
+                        continue
+                    if enable_transition:
+                        # 静音→说话过渡
+                        if time.time() - _transition_start < _transition_duration and _last_silent_frame is not None:
+                            alpha = min(1.0, (time.time() - _transition_start) / _transition_duration)
+                            combine_frame = cv2.addWeighted(_last_silent_frame, 1-alpha, current_frame, alpha, 0)
+                        else:
+                            combine_frame = current_frame
+                        # 缓存说话帧
+                        _last_speaking_frame = combine_frame.copy()
                     else:
                         combine_frame = current_frame
-                    # 缓存说话帧
-                    _last_speaking_frame = combine_frame.copy()
-                else:
-                    combine_frame = current_frame
 
-            cv2.putText(combine_frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
-            
-            # 使用统一输出接口推送视频帧
-            self.output.push_video_frame(combine_frame)
-            self.record_video_data(combine_frame)
-
-            for audio_frame in audio_frames:
-                #frame,type,eventpoint = audio_frame
-                frame = (audio_frame.data * 32767).astype(np.int16)
-
-                # 使用统一输出接口推送音频帧
-                self.output.push_audio_frame(frame, audio_frame.userdata)
-                self.record_audio_data(frame)
+                cv2.putText(combine_frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
                 
-            # if self.opt.transport == 'virtualcam' and hasattr(self.output, '_cam') and self.output._cam:
-            #     self.output._cam.sleep_until_next_frame()
+                # 使用统一输出接口推送视频帧
+                self.output.push_video_frame(combine_frame)
+                self.record_video_data(combine_frame)
+
+                for audio_frame in audio_frames:
+                    #frame,type,eventpoint = audio_frame
+                    frame = (audio_frame.data * 32767).astype(np.int16)
+
+                    # 使用统一输出接口推送音频帧
+                    self.output.push_audio_frame(frame, audio_frame.userdata)
+                    self.record_audio_data(frame)
+                    
+                # if self.opt.transport == 'virtualcam' and hasattr(self.output, '_cam') and self.output._cam:
+                #     self.output._cam.sleep_until_next_frame()
+            except Exception:
+                # A crash here (bad crop, output failure) would otherwise kill
+                # the thread silently and leave render()'s join() hanging. Log,
+                # and set the quit_event so all threads tear down together.
+                logger.exception("process_frames thread error; stopping process_frames")
+                quit_event.set()
+                if hasattr(self, 'quit_event'):
+                    self.quit_event.set()
+                break
 
         self.output.stop()
         logger.info('baseavatar process_frames thread stop') 
@@ -472,31 +516,49 @@ class BaseAvatar:
         self.init_customindex()
         self.tts.render(quit_event)
 
+        # Fix 3: ASR (whisper/mel/hubert) feature extraction now runs in its own
+        # worker thread so it overlaps with frame production instead of stalling
+        # the render loop on every run_step() call.
+        asr_quit_event = Event()
+        asr_thread = Thread(target=self.asr.run_step_loop, args=(asr_quit_event,), daemon=True)
+        asr_thread.start()
+        
         infer_quit_event = mp.Event()
-        infer_thread = Thread(target=self.inference, args=(infer_quit_event,))
+        infer_thread = Thread(target=self.inference, args=(infer_quit_event,), daemon=True)
         infer_thread.start()
         
         process_quit_event = Event()
-        process_thread = Thread(target=self.process_frames, args=(process_quit_event,))
+        process_thread = Thread(target=self.process_frames, args=(process_quit_event,), daemon=True)
         process_thread.start()
 
         count=0
         totaltime=0
         _starttime=time.perf_counter()
         _totalframe=0
-        while not quit_event.is_set(): 
+        while not quit_event.is_set():
             t = time.perf_counter()
-            self.asr.run_step()
-
+            # Fix 3: run_step() moved to the ASR worker thread above; the render
+            # loop only applies backpressure via the output buffer size.
             buffer_size = self.output.get_buffer_size() if hasattr(self.output, 'get_buffer_size') else 0
             if buffer_size >= 5:
                 logger.debug('sleep qsize=%d', buffer_size)
                 time.sleep(0.04 * buffer_size * 0.8)
+            else:
+                # run_step() no longer runs here to block/throttle the loop, so
+                # yield a little to avoid spinning hot while the ASR worker does
+                # the heavy feature extraction in its own thread.
+                time.sleep(0.005)
         logger.info('baseavatar render thread stop')
 
+        # Shut down in dependency order: ASR worker first (stops producing
+        # features), then inference (consumes features / produces frames), then
+        # process (consumes frames / pushes to output).
+        asr_quit_event.set()
+        asr_thread.join(timeout=10)
+
         infer_quit_event.set()
-        infer_thread.join()
+        infer_thread.join(timeout=10)
 
         process_quit_event.set()
-        process_thread.join()
+        process_thread.join(timeout=10)
 

@@ -95,12 +95,8 @@ def get_landmark_and_bbox(img_list,upperbondrange =0):
     average_range_minus = []
     average_range_plus = []
     for fb in tqdm(batches):
-        # results = inference_topdown(model, np.asarray(fb)[0])
-        # results = merge_data_samples(results)
-        # keypoints = results.pred_instances.keypoints
-        # face_land_mark= keypoints[0][23:91]
-        # face_land_mark = face_land_mark.astype(np.int32)
-        img_rgb = cv2.cvtColor(np.asarray(fb)[0], cv2.COLOR_BGR2RGB)
+        frame = np.asarray(fb)[0]
+        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         landmarks_list = face_recognition.face_landmarks(img_rgb)
         if landmarks_list:
             lm = landmarks_list[0]
@@ -118,37 +114,36 @@ def get_landmark_and_bbox(img_list,upperbondrange =0):
             ).astype(np.int32)
         else:
             face_land_mark = np.zeros((68, 2), dtype=np.int32)
-        
-        # get bounding boxes by face detetion
-        bbox = fa.get_detections_for_batch(np.asarray(fb))
-        
-        # adjust the bounding box refer to landmark
-        # Add the bounding box to a tuple and append it to the coordinates list
-        for j, f in enumerate(bbox):
+
+        # The SFD face detector (fa.get_detections_for_batch) is ~3.4s/frame on
+        # CPU and is only a FALLBACK for when the dlib landmark box is unusable.
+        # Only run it when the landmark-derived box is actually invalid — the
+        # normal path then costs ~0.4s/frame instead of ~3.8s.
+        half_face_coord = face_land_mark[29]
+        range_minus = (face_land_mark[30]- face_land_mark[29])[1]
+        range_plus = (face_land_mark[29]- face_land_mark[28])[1]
+        average_range_minus.append(range_minus)
+        average_range_plus.append(range_plus)
+        if upperbondrange != 0:
+            half_face_coord[1] = upperbondrange+half_face_coord[1] #手动调整  + 向下（偏29）  - 向上（偏28）
+        half_face_dist = np.max(face_land_mark[:,1]) - half_face_coord[1]
+        min_upper_bond = 0
+        upper_bond = max(min_upper_bond, half_face_coord[1] - half_face_dist)
+
+        f_landmark = (np.min(face_land_mark[:, 0]),int(upper_bond),np.max(face_land_mark[:, 0]),np.max(face_land_mark[:,1]))
+        x1, y1, x2, y2 = f_landmark
+
+        if y2-y1<=0 or x2-x1<=0 or x1<0: # landmark bbox not suitable — fall back to SFD
+            bbox = fa.get_detections_for_batch(np.asarray([frame]))
+            f = bbox[0] if bbox else None
             if f is None: # no face in the image
                 coords_list += [coord_placeholder]
-                continue
-            
-            half_face_coord =  face_land_mark[29]#np.mean([face_land_mark[28], face_land_mark[29]], axis=0)
-            range_minus = (face_land_mark[30]- face_land_mark[29])[1]
-            range_plus = (face_land_mark[29]- face_land_mark[28])[1]
-            average_range_minus.append(range_minus)
-            average_range_plus.append(range_plus)
-            if upperbondrange != 0:
-                half_face_coord[1] = upperbondrange+half_face_coord[1] #手动调整  + 向下（偏29）  - 向上（偏28）
-            half_face_dist = np.max(face_land_mark[:,1]) - half_face_coord[1]
-            min_upper_bond = 0
-            upper_bond = max(min_upper_bond, half_face_coord[1] - half_face_dist)
-            
-            f_landmark = (np.min(face_land_mark[:, 0]),int(upper_bond),np.max(face_land_mark[:, 0]),np.max(face_land_mark[:,1]))
-            x1, y1, x2, y2 = f_landmark
-            
-            if y2-y1<=0 or x2-x1<=0 or x1<0: # if the landmark bbox is not suitable, reuse the bbox
+            else:
                 coords_list += [f]
                 w,h = f[2]-f[0], f[3]-f[1]
                 print("error bbox:",f)
-            else:
-                coords_list += [f_landmark]
+        else:
+            coords_list += [f_landmark]
     
     print("********************************************bbox_shift parameter adjustment**********************************************************")
     print(f"Total frame:「{len(frames)}」 Manually adjust range : [ -{int(sum(average_range_minus) / len(average_range_minus))}~{int(sum(average_range_plus) / len(average_range_plus))} ] , the current value: {upperbondrange}")

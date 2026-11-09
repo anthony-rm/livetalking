@@ -188,6 +188,55 @@ async def sse_handler(request):
     return response
 
 
+# ─── 模型生命周期 / 应用重启 ────────────────────────────────────────────────
+# Lazy imports from app: the app module is fully loaded by the time these
+# handlers run, so importing inside the function avoids the circular import.
+
+async def model_status(request):
+    """模型加载状态（lazy-loaded on first connect）"""
+    try:
+        import app as app_module
+        opt = request.app.get("opt")
+        return json_ok(data={
+            "state": app_module.model_state,
+            "model": getattr(opt, "model", ""),
+            "active_sessions": session_manager.active_sessions(),
+        })
+    except Exception as e:
+        logger.exception('model_status exception:')
+        return json_error(str(e))
+
+
+async def model_unload(request):
+    """手动卸载模型（断开所有会话后仍保留, 需 force=true 才强制断开）"""
+    try:
+        import app as app_module
+        params = {}
+        if request.can_read_body:
+            try:
+                params = await request.json()
+            except Exception:
+                params = {}
+        force = bool(params.get('force', False))
+        msg = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: app_module.unload_model(force=force))
+        return json_ok(data={"result": msg})
+    except Exception as e:
+        logger.exception('model_unload exception:')
+        return json_error(str(e))
+
+
+async def app_restart(request):
+    """重启整个应用（通过 restart.sh, 保留原启动参数）"""
+    try:
+        import app as app_module
+        app_module.restart_app()
+        return json_ok(data={"result": "restarting — the server will be back in a few seconds"})
+    except Exception as e:
+        logger.exception('app_restart exception:')
+        return json_error(str(e))
+
+
 async def admin_config(request):
     """Admin: 获取全局配置参数"""
     try:
@@ -198,6 +247,7 @@ async def admin_config(request):
     except Exception as e:
         logger.exception('admin_config exception:')
         return json_error(str(e))
+
 
 
 async def admin_sessions(request):
@@ -252,6 +302,9 @@ def setup_routes(app):
     app.router.add_post("/is_speaking", is_speaking)
     app.router.add_get("/api/admin/config", admin_config)
     app.router.add_get("/api/admin/sessions", admin_sessions)
+    app.router.add_get("/api/model/status", model_status)
+    app.router.add_post("/api/model/unload", model_unload)
+    app.router.add_post("/api/app/restart", app_restart)
     app.router.add_get('/sse', sse_handler)
 
     # ── Local ASR endpoint (SenseVoice/FunASR) ── Issue #604 ──
@@ -268,5 +321,13 @@ def setup_routes(app):
 
     # 注册 avatar 生成相关的路由
     setup_avatar_routes(app)
+
+    # 注册视频增强（base video 预处理）路由
+    try:
+        from server.enhance_routes import setup_enhance_routes
+        setup_enhance_routes(app)
+        logger.info("[Enhance] /api/enhance/* routes enabled")
+    except Exception as e:
+        logger.warning(f"[Enhance] failed to register enhance routes: {e}")
 
     app.router.add_static('/', path='web')

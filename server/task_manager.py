@@ -32,7 +32,9 @@ class AvatarTask:
             "notify_url": self.notify_url,
             "start_time": self.start_time,
             "end_time": self.end_time,
-            "duration": (self.end_time or time.time()) - self.start_time
+            "duration": (self.end_time or time.time()) - self.start_time,
+            # Set when this avatar was generated from an enhance job's output.
+            "source_job": self.params.get("source_job"),
         }
 
 class TaskManager:

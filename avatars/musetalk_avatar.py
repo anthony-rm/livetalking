@@ -56,8 +56,7 @@ logger.info('Using {} for inference.'.format(device))
 
 def load_model():
     # load model weights
-    vae, unet, pe = load_all_model()
-    #device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else "cpu"))
+    vae, unet, pe = load_all_model(device=device)
     timesteps = torch.tensor([0], device=device)
     pe = pe.half().to(device)
     vae.vae = vae.vae.half().to(device)
@@ -75,6 +74,24 @@ def load_avatar(avatar_id):
     mask_out_path =f"{avatar_path}/mask"
     mask_coords_path =f"{avatar_path}/mask_coords.pkl"
     avatar_info_path = f"{avatar_path}/avator_info.json"
+
+    # MuseTalk avatars are identified by their latents.pt + mask/. A wav2lip
+    # avatar only has face_imgs/ + coords.pkl + full_imgs/, so driving it
+    # through the musetalk path fails on a raw FileNotFoundError for
+    # latents.pt. Fail loudly with the mismatch explained instead of a
+    # cryptic torch load error.
+    if not os.path.exists(latents_out_path):
+        if os.path.exists(os.path.join(avatar_path, 'face_imgs')):
+            raise RuntimeError(
+                f"Avatar '{avatar_id}' looks like a wav2lip avatar (found "
+                f"face_imgs/ but no {latents_out_path}). MuseTalk requires "
+                "latents.pt + mask/ — regenerate it with the matching model, "
+                "or start the server with --model wav2lip."
+            )
+        raise RuntimeError(
+            f"Avatar '{avatar_id}' is missing its MuseTalk latents file "
+            f"({latents_out_path}). Regenerate the avatar with --model musetalk."
+        )
 
     input_latent_list_cycle = torch.load(latents_out_path)
     with open(coords_path, 'rb') as f:

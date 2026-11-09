@@ -24,6 +24,13 @@ def read_imgs(img_list):
     return frames
 
 def mirror_index(size, index):
+    if size <= 0:
+        # An empty frame list (e.g. a MuseTalk avatar driven through the
+        # wav2lip path, which has no face_imgs/) makes inference_batch crash
+        # with ZeroDivisionError. The inference thread dies silently, the
+        # pipeline stalls, and the whole server hangs. Treat it as a single
+        # frame so callers get a clear failure instead of a silent hang.
+        return 0
     turn = index // size
     res = index % size
     if turn % 2 == 0:

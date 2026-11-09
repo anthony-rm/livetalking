@@ -52,6 +52,10 @@ class SessionManager:
     def has_session(self, sessionid: str) -> bool:
         """检查会话是否存在"""
         return sessionid in self.sessions and self.sessions[sessionid] is not None
+
+    def active_sessions(self) -> int:
+        """当前活跃（非占位）会话数"""
+        return sum(1 for s in self.sessions.values() if s is not None)
         
     async def create_session(self, params: dict, sessionid: str = None) -> str:
         """

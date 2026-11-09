@@ -9,7 +9,17 @@ import pickle
 from avatars.wav2lip import face_detection
 
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+# Prefer CUDA, then Apple MPS, then CPU. The old code fell straight to CPU on
+# Apple Silicon, so the SFD face detector ran its conv math in software and
+# face detection dominated generation time (progress stayed pinned in the
+# 40-80% band). MPS gives the same order-of-magnitude win here as it did for
+# the musetalk VAE.
+if torch.cuda.is_available():
+    device = 'cuda'
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    device = 'mps'
+else:
+    device = 'cpu'
 print('Using {} for inference.'.format(device))
 
 def osmakedirs(path_list):

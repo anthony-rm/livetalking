@@ -59,12 +59,24 @@ def parse_args():
 
     # ─── 数字人模型 ────────────────────────────────────────────────────
     parser.add_argument('--model', type=str, default='wav2lip',
-                        help="avatar model: musetalk/wav2lip/ultralight")
+                        help="avatar model: musetalk/wav2lip/ultralight/remote")
+    parser.add_argument('--remote_backend', type=str, default='musetalk',
+                        choices=['musetalk', 'wav2lip'],
+                        help="remote GPU backend to target when --model=remote (musetalk/wav2lip)")
+    parser.add_argument('--remote_worker', type=str, default='',
+                        help="remote GPU worker host:port (e.g. 192.168.1.42:50051). "
+                             "Can also be passed as LT_REMOTE_WORKER env var.")
     parser.add_argument('--avatar_id', type=str, default='wav2lip256_avatar1',
                         help="avatar id in data/avatars")
     parser.add_argument('--batch_size', type=int, default=16, help="infer batch")
     parser.add_argument('--modelres', type=int, default=192)
     parser.add_argument('--modelfile', type=str, default='')
+
+    # ─── 开发/测试开关 ─────────────────────────────────────────────────
+    parser.add_argument('--skip-model', action='store_true', default=False,
+                        help="Dev flag: skip loading avatar model weights. The HTTP/API "
+                             "layer still starts; WebRTC/session creation is disabled. "
+                             "Useful for testing routes without downloading checkpoints.")
 
     # ─── 自定义动作和多形象 ────────────────────────────────────────────
     parser.add_argument('--customvideo_config', type=str, default='',
@@ -87,6 +99,12 @@ def parse_args():
     # ─── 传输 ─────────────────────────────────────────────────────────
     parser.add_argument('--transport', type=str, default='webrtc',
                         help="output: rtcpush/webrtc/rtmp/virtualcam")
+    parser.add_argument('--video-codec', type=str, default='vp8',
+                        choices=['vp8', 'h264', 'h264,vp8', 'vp8,h264'],
+                        help="preferred video codec order. 'vp8' (default) works in "
+                             "every browser: H.264 needs sprop-parameter-sets in the "
+                             "SDP, which aiortc does not emit, so Firefox cannot "
+                             "decode it and shows a black video.")
     parser.add_argument('--stun', type=str, default='stun:stun.freeswitch.org:3478',
                         help="stun server url")
     parser.add_argument('--push_url', type=str,

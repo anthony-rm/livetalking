@@ -27,12 +27,14 @@ import re
 import os
 import numpy as np
 from threading import Thread,Event
+import threading
 #import multiprocessing
 import torch.multiprocessing as mp
 
 from aiohttp import web
 import aiohttp
 import aiohttp_cors
+import utils.aioice_fix  # noqa: F401  — must load before aiortc creates ICE connections
 from aiortc import RTCPeerConnection, RTCSessionDescription,RTCIceServer,RTCConfiguration
 from aiortc.rtcrtpsender import RTCRtpSender
 from server.webrtc import HumanPlayer
@@ -46,6 +48,8 @@ from server.session_manager import session_manager
 import argparse
 import random
 import shutil
+import signal
+import atexit
 import asyncio
 import torch
 from io import BytesIO
@@ -61,7 +65,145 @@ app = Flask(__name__)
 opt = None
 model = None
 global_avatars = {} # avatar_id: payload
+
+# Fix 4: set once the avatar model has finished loading + warming up, so the
+# HTTP layer can bind immediately and session creation blocks cleanly until
+# the model is ready.
+model_ready_event = threading.Event()
+
+# ─── Lazy model loading ──────────────────────────────────────────────────────
+# Weights are NOT loaded at startup: the first connect triggers
+# ensure_model_loaded(). After that the model stays in memory across
+# disconnects; unload_model() frees it manually.
+model_state = 'unloaded'  # 'unloaded' | 'loading' | 'ready'
+model_state_lock = threading.Lock()
+
+# PID file: restart.sh uses it to stop the exact process that owns the port.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PID_FILE = os.path.join(BASE_DIR, 'livetalking.pid')
+
+
+def _write_pidfile():
+    try:
+        with open(PID_FILE, 'w') as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        logger.warning('[startup] could not write pid file %s', PID_FILE)
+
+
+def _remove_pidfile():
+    """Remove the pid file only if it still belongs to this process."""
+    try:
+        with open(PID_FILE) as f:
+            owner = f.read().strip()
+        if owner == str(os.getpid()):
+            os.remove(PID_FILE)
+    except (OSError, ValueError):
+        pass
         
+
+#####lazy model management#################################
+def _do_load_models():
+    """Load the weights for the configured --model backend."""
+    global model
+    if opt.model == 'musetalk':
+        model = load_model()
+        global_avatars[opt.avatar_id] = load_avatar(opt.avatar_id)
+        warm_up(opt.batch_size, model)
+    elif opt.model == 'wav2lip':
+        model = load_model("./models/wav2lip.pth")
+        global_avatars[opt.avatar_id] = load_avatar(opt.avatar_id)
+        warm_up(opt.batch_size, model, 256)
+    elif opt.model == 'ultralight':
+        model = load_model(opt)
+        global_avatars[opt.avatar_id] = load_avatar(opt.avatar_id)
+        warm_up(opt.batch_size, global_avatars[opt.avatar_id], 160)
+    elif opt.model == 'remote':
+        # The GPU lives on the Windows worker; load_model() connects + tells the
+        # worker to load the backend weights, load_avatar() ships the inference
+        # tensors, warm_up() primes the remote CUDA path.
+        model = load_model(opt)
+        global_avatars[opt.avatar_id] = load_avatar(opt.avatar_id)
+        warm_up(opt.batch_size, model)
+
+
+def ensure_model_loaded():
+    """Lazy-load the avatar model on first connect (thread-safe).
+
+    Concurrent callers wait on model_ready_event instead of loading twice.
+    """
+    global model_state
+    if model_state == 'ready':
+        return
+    with model_state_lock:
+        if model_state == 'ready':
+            return
+        if model_state == 'loading':
+            # Another thread is already loading: wait for it to finish.
+            model_ready_event.wait()
+            if model_state != 'ready':
+                raise RuntimeError('avatar model failed to load — check server logs')
+            return
+        model_state = 'loading'
+        model_ready_event.clear()
+        try:
+            _do_load_models()
+            model_state = 'ready'
+            logger.info('[model] avatar model loaded and warmed up (lazy load)')
+        except Exception:
+            model_state = 'unloaded'
+            logger.exception('[model] model load/warmup failed')
+            raise
+        finally:
+            model_ready_event.set()
+
+
+def unload_model(force: bool = False) -> str:
+    """Free model weights + cached avatars. Refuses while sessions are active
+    unless force=True, which disconnects them first."""
+    global model, model_state
+    with model_state_lock:
+        for sid in list(session_manager.sessions.keys()):
+            if session_manager.sessions[sid] is not None and not force:
+                raise RuntimeError(
+                    f'session {sid} is still connected — disconnect it first '
+                    f'or call unload with force=true')
+            session_manager.remove_session(sid)
+        if model_state == 'unloaded':
+            return 'model already unloaded'
+        model = None
+        global_avatars.clear()
+        if opt and opt.model == 'remote':
+            try:
+                from avatars.remote_avatar import unload_remote
+                unload_remote()
+            except Exception:  # noqa: BLE001
+                logger.warning('[model] remote worker unload failed', exc_info=True)
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        model_state = 'unloaded'
+        model_ready_event.clear()
+        logger.info('[model] avatar model unloaded (weights freed)')
+        return 'model unloaded'
+
+
+def restart_app():
+    """Relaunch the whole process via restart.sh with the same CLI args.
+
+    The delayed spawn lets the HTTP response reach the client first; restart.sh
+    then SIGTERMs this process, which triggers the graceful shutdown path.
+    """
+    import subprocess
+    import sys
+    import time
+    cmd = ['/bin/bash', os.path.join(BASE_DIR, 'restart.sh')] + sys.argv[1:]
+    def _spawn():
+        time.sleep(0.7)
+        logger.info('[restart] relaunching app: %s', ' '.join(cmd))
+        subprocess.Popen(cmd, cwd=BASE_DIR, start_new_session=True)
+    threading.Thread(target=_spawn, daemon=True).start()
+
 
 #####webrtc###############################
 # rtc_manager replaces the old pcs set and duplicate offer handlers.
@@ -74,6 +216,11 @@ def randN(N)->int:
     return random.randint(min, max - 1)
 
 def build_avatar_session(sessionid:str, params:dict)->BaseAvatar:
+    # Lazy load: first connect triggers the (slow) weight load + warmup; later
+    # connects reuse the in-memory model. Runs in a thread pool (via
+    # SessionManager.create_session), so this blocks cleanly while the HTTP
+    # dashboard stays responsive.
+    ensure_model_loaded()
     opt_this = copy.deepcopy(opt)
     opt_this.sessionid = sessionid
 
@@ -122,16 +269,26 @@ async def download_record(request):
 
 
 def main():
-    global rtc_manager, opt, model,load_avatar
+    global rtc_manager, opt, model, load_avatar, load_model, warm_up
     # 解析命令行参数
     from config import parse_args
     opt = parse_args()
+
+    # --remote_worker is the single knob for both inference and enhancement:
+    # publish it as env so server/enhance_routes.py (no access to opt) and the
+    # remote avatar plugin both pick it up.
+    if getattr(opt, 'remote_worker', ''):
+        os.environ['LT_REMOTE_WORKER'] = opt.remote_worker
+
+    _write_pidfile()
+    atexit.register(_remove_pidfile)
 
     # ─── 加载 avatar 插件（触发 @register 注册）──────────────────────
     _avatar_modules = {
         'musetalk':   'avatars.musetalk_avatar',
         'wav2lip':    'avatars.wav2lip_avatar',
         'ultralight': 'avatars.ultralight_avatar',
+        'remote':     'avatars.remote_avatar',
     }
     import importlib
     avatar_mod = importlib.import_module(_avatar_modules[opt.model])
@@ -140,18 +297,13 @@ def main():
     warm_up = avatar_mod.warm_up
     logger.info(opt)
 
-    if opt.model == 'musetalk':
-        model = load_model()
-        global_avatars[opt.avatar_id] = load_avatar(opt.avatar_id) 
-        warm_up(opt.batch_size,model)      
-    elif opt.model == 'wav2lip':
-        model = load_model("./models/wav2lip.pth")
-        global_avatars[opt.avatar_id] = load_avatar(opt.avatar_id)
-        warm_up(opt.batch_size,model,256)
-    elif opt.model == 'ultralight':
-        model = load_model(opt)
-        global_avatars[opt.avatar_id] = load_avatar(opt.avatar_id)
-        warm_up(opt.batch_size,global_avatars[opt.avatar_id],160)
+    # ─── Lazy model loading: nothing is loaded here. The first connect to any
+    # avatar triggers ensure_model_loaded() (weights + default avatar + warmup).
+    # ─── Manual unload/restart live in unload_model() / restart_app() below and
+    # are exposed on /api/model/* and /api/app/restart (server/routes.py).
+    if opt.skip_model:
+        logger.info('[--skip-model] kept for compatibility; model loading is '
+                    'lazy-on-first-connect by default now.')
 
     # init rtc manager
     session_manager.set_max_session(opt.max_session)
@@ -159,14 +311,15 @@ def main():
     rtc_manager = RTCManager(opt)
     # share avatar_sessions (RTCManager handles it but routes.py expects it)
 
-    # 虚拟摄像头或 RTMP 模式：启动后台渲染线程
+    # 虚拟摄像头或 RTMP 模式：后台渲染线程在模型就绪后启动，不阻塞 HTTP 绑定
     if opt.transport == 'virtualcam' or opt.transport == 'rtmp':
+        def _start_virtualcam():
+            # build_avatar_session() waits on model_ready_event internally.
+            session_manager.add_session('0', build_avatar_session('0', {}))
+            rendthrd = Thread(target=session_manager.get_session('0').render, args=(thread_quit,))
+            rendthrd.start()
         thread_quit = Event()
-        params = {}
-        # session 0 for virtualcam
-        session_manager.add_session('0', build_avatar_session('0', params))
-        rendthrd = Thread(target=session_manager.get_session('0').render, args=(thread_quit,))
-        rendthrd.start()
+        Thread(target=_start_virtualcam, daemon=True).start()
         if opt.transport == 'virtualcam':
             logger.info("[VirtualCam] Virtual camera output enabled - digital human will be rendered to virtual camera")
 
@@ -207,14 +360,56 @@ def main():
         asyncio.set_event_loop(loop)
         loop.run_until_complete(runner.setup())
         site = web.TCPSite(runner, '0.0.0.0', opt.listenport)
-        loop.run_until_complete(site.start())
+        try:
+            loop.run_until_complete(site.start())
+        except OSError as e:
+            logger.error('[startup] cannot bind 0.0.0.0:%s — %s', opt.listenport, e)
+            logger.error('[startup] another process is holding the port; '
+                         'use ./restart.sh to stop it and relaunch')
+            loop.run_until_complete(runner.cleanup())
+            loop.close()
+            _remove_pidfile()
+            raise SystemExit(1)
+
+        # ─── Graceful shutdown: SIGTERM/SIGINT stop sessions, close the HTTP
+        # listener and return from run_forever, so restart.sh can bring the
+        # process down quickly instead of waiting for a SIGKILL.
+        shutting_down = False
+
+        async def _graceful_shutdown(signame):
+            nonlocal shutting_down
+            if shutting_down:
+                return
+            shutting_down = True
+            logger.info('[shutdown] %s received — stopping sessions and HTTP server', signame)
+            try:
+                await runner.cleanup()
+            except Exception:
+                logger.exception('[shutdown] cleanup failed')
+            finally:
+                loop.stop()
+
+        def _handle_signal(signame):
+            logger.info('[shutdown] %s received', signame)
+            loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(_graceful_shutdown(signame)))
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, _handle_signal, sig.name)
+            except (NotImplementedError, RuntimeError):
+                # Non-main thread or unsupported platform: fall back to the
+                # default handler (KeyboardInterrupt exits with a traceback).
+                logger.debug('[shutdown] signal handler for %s not installed', sig.name)
+
         if opt.transport=='rtcpush':
             for k in range(opt.max_session):
                 push_url = opt.push_url
                 if k!=0:
                     push_url = opt.push_url+str(k)
                 loop.run_until_complete(rtc_manager.handle_rtcpush(push_url, str(k)))
-        loop.run_forever()    
+        loop.run_forever()
+        loop.close()
     #Thread(target=run_server, args=(web.AppRunner(appasync),)).start()
     run_server(web.AppRunner(appasync))
 

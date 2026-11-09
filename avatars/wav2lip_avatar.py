@@ -67,6 +67,11 @@ def load_model(path):
     model.load_state_dict(new_s)
 
     model = model.to(device)
+    # float16: MPS runs substantially faster in half precision than float32,
+    # and Wav2Lip's convnet is numerically stable in it. This is the single
+    # biggest fps win available on Apple Silicon (no CUDA here).
+    if device.type == 'mps' or device.type == 'cuda':
+        model = model.half()
     return model.eval()
 
 def load_avatar(avatar_id):
@@ -84,6 +89,18 @@ def load_avatar(avatar_id):
     input_face_list = glob.glob(os.path.join(face_imgs_path, '*.[jpJP][pnPN]*[gG]'))
     input_face_list = sorted(input_face_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
     face_list_cycle = read_imgs(input_face_list)
+    # wav2lip needs the per-frame face crops (face_imgs/). A MuseTalk avatar
+    # only has full_imgs/ + mask/ + latents.pt, so driving it through the
+    # wav2lip path leaves face_list_cycle empty and inference_batch divides by
+    # zero. Fail loudly here instead of letting the inference thread die
+    # silently and stall the whole server.
+    if not face_list_cycle:
+        raise RuntimeError(
+            f"Avatar '{avatar_id}' has no face crops in {face_imgs_path}. "
+            "wav2lip requires face_imgs/ — this looks like a MuseTalk avatar "
+            "being driven through the wav2lip model. Regenerate it with the "
+            "matching model, or switch --model to musetalk."
+        )
 
     return frame_list_cycle,face_list_cycle,coord_list_cycle
 
@@ -93,6 +110,9 @@ def warm_up(batch_size,model,modelres):
     logger.info('warmup model...')
     img_batch = torch.ones(batch_size, 6, modelres, modelres).to(device)
     mel_batch = torch.ones(batch_size, 1, 80, 16).to(device)
+    if next(model.parameters()).dtype == torch.float16:
+        img_batch = img_batch.half()
+        mel_batch = mel_batch.half()
     model(mel_batch, img_batch)
 
 @register("avatar", "wav2lip")
@@ -107,6 +127,8 @@ class LipReal(BaseAvatar):
         # self.idx = 0
         # self.res_frame_queue = Queue(self.batch_size*2)
         self.model = model
+        # Cache once: True when the model runs in float16 (mps/cuda path).
+        self._fp16 = next(model.parameters()).dtype == torch.float16
 
         self.frame_list_cycle,self.face_list_cycle,self.coord_list_cycle = avatar
 
@@ -132,6 +154,9 @@ class LipReal(BaseAvatar):
         
         img_batch = torch.FloatTensor(np.transpose(img_batch, (0, 3, 1, 2))).to(device)
         audiofeat_batch = torch.FloatTensor(np.transpose(audiofeat_batch, (0, 3, 1, 2))).to(device)
+        if self._fp16:
+            img_batch = img_batch.half()
+            audiofeat_batch = audiofeat_batch.half()
 
         with torch.no_grad():
             pred = self.model(audiofeat_batch, img_batch)

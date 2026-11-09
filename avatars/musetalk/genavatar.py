@@ -104,9 +104,22 @@ def generate_avatar(video_path, avatar_id, save_path='./data/avatars', bbox_shif
     idx = -1
     coord_placeholder = (0.0, 0.0, 0.0, 0.0)
 
-    device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
+    # Prefer CUDA, then Apple MPS, then CPU. The old code fell straight to CPU
+    # on Apple Silicon, and then called .half() on it below — fp16 matrix math
+    # has no CPU acceleration and is emulated in software, which is orders of
+    # magnitude slower than fp32 (an avatar generation that should take seconds
+    # ran for 10+ minutes without finishing).
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     vae_local, unet_local, pe_local = load_all_model(device=device)
-    vae_local.vae = vae_local.vae.half().to(device)
+    # Only use fp16 where it is actually accelerated (CUDA/MPS). On CPU it is
+    # emulated and much slower than fp32.
+    if device.type in ("cuda", "mps"):
+        vae_local.vae = vae_local.vae.half().to(device)
 
     if version == "v15":
         fp_local = FaceParsing(left_cheek_width=90, right_cheek_width=90)

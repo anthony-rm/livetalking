@@ -41,7 +41,15 @@ class UNet():
             self.device = device
         else:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        weights = torch.load(model_path) if torch.cuda.is_available() else torch.load(model_path, map_location=self.device)
+        # Always load the checkpoint into CPU memory, then move the finished
+        # model to the target device.
+        #
+        # Using map_location=self.device (e.g. "mps") makes torch.load migrate
+        # every individual tensor to the GPU as it deserialises, which is
+        # pathologically slow: on MPS a 3.4 GB checkpoint took >11 min and
+        # thrashed swap, versus ~1 s loading to CPU. The subsequent .to(device)
+        # does the copy once, in bulk.
+        weights = torch.load(model_path, map_location="cpu")
         self.model.load_state_dict(weights)
         if use_float16:
             self.model = self.model.half()
