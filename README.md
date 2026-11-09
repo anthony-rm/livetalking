@@ -2,13 +2,18 @@
     <img src="./assets/LiveTalking-logo.png" align="middle" width="600"/>
 </p>
 
-> **This is a fork of [lipku/LiveTalking](https://github.com/lipku/LiveTalking)** (Apache-2.0),
-> maintained by [@anthony-rm](https://github.com/anthony-rm). Changes relative to
-> upstream: Apple Silicon (MPS) support, a lazy-load/unload model lifecycle with
-> admin controls, a single English web UI, the avatar base-video preprocessing
-> pipeline (`tools/enhance/`), and an optional remote GPU worker over gRPC
-> (`remote/`, see [docs/remote-gpu.md](docs/remote-gpu.md)). Upstream's own
-> documentation, links and citation below are kept intact.
+> **Course project.** This repository is a school group project built on the
+> open-source [LiveTalking](https://github.com/lipku/LiveTalking) engine
+> (Apache-2.0). It is an academic exercise, not a production deployment, and it
+> is not affiliated with or endorsed by the upstream project. The license and
+> attribution for the original work are retained in [LICENSE](./LICENSE).
+>
+> Group additions live mainly in:
+> - `avatars/remote_avatar.py`, `remote/` — run inference on a remote GPU worker
+> - `tools/enhance/` — avatar base-video preprocessing
+> - `server/enhance_routes.py`, `docs/avatar-studio.md` — merged Avatar Studio page
+> - `app.py` — lazy model load/unload lifecycle
+> - Apple Silicon (MPS) support across the avatar backends
 
 <p align="center">
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202-dfd.svg"></a>
@@ -203,7 +208,7 @@ python app.py --transport webrtc --model wav2lip --avatar_id wav2lip256_avatar1
 | [docs/avatar_api.md](docs/avatar_api.md) | Avatar Generation API — create tasks, query progress, delete tasks |
 | [docs/admin_api.md](docs/admin_api.md) | Admin API — global config, session monitoring, force stop |
 
-### Additional docs in this fork
+### Additional docs
 
 | Document | Description |
 |----------|-------------|
