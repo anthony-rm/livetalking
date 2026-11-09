@@ -94,7 +94,12 @@ def test_ssh(username: str, host: str, password: str, *, port: int = DEFAULT_SSH
                                "Possible man-in-the-middle; verify the PC."}
 
         stdin, stdout, stderr = client.exec_command(_PROBE_CMD, timeout=timeout)
-        remote_host = stdout.read().decode("utf-8", "replace").strip()
+        try:
+            remote_host = stdout.read().decode("utf-8", "replace").strip()
+        except socket.timeout:
+            # The command ran but the far end never closed the channel. Auth and
+            # the host key are already proven, which is what this test is for.
+            remote_host = ""
         return {"ok": True, "host": host, "port": port,
                 "hostname": remote_host, "fingerprint": fp,
                 "new_host_key": bool(trust_new and not expected_fingerprint),
