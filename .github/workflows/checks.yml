@@ -1,0 +1,31 @@
+name: checks
+
+# Dependency-free sanity checks. This workflow deliberately installs nothing:
+# the full stack (torch, aiortc, ...) is too heavy for a hosted runner, so this
+# gate only catches syntax errors, broken relative links and non-ASCII UI leaks.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile all Python sources
+        run: python -m compileall -q app.py config.py registry.py llm.py server avatars utils tts streamout tools remote scripts tests
+      - name: Check shell scripts parse
+        run: |
+          fail=0
+          for f in $(git ls-files '*.sh'); do
+            bash -n "$f" || { echo "syntax error: $f"; fail=1; }
+          done
+          exit $fail

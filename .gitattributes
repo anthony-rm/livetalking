@@ -1,0 +1,29 @@
+* text=auto eol=lf
+
+# Shell scripts must keep LF even on Windows checkouts, or they fail to run.
+*.sh text eol=lf
+*.bat text eol=crlf
+
+*.py text
+*.md text
+*.html text
+*.js text
+*.yaml text
+*.yml text
+*.json text
+*.proto text
+*.txt text
+*.cfg text
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.mp4 binary
+*.mov binary
+*.wav binary
+*.pth binary
+*.pt binary
+*.pkl binary
+*.onnx binary

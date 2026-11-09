@@ -3,6 +3,7 @@ build/
 *.egg-info/
 *.so
 *.mp4
+*.mov
 
 tmp*
 trial*/
@@ -16,6 +17,29 @@ pretrained
 .DS_Store
 workspace/log_ngp.txt
 .idea
-models/
+.vscode/
+/models/
 *.log
 dist
+.env
+.env.local
+
+# LiveTalking runtime pid file
+livetalking.pid
+*.pid
+
+# Model weights pulled at runtime by facexlib / RVM / Real-ESRGAN / GFPGAN.
+# Resolved cwd-relative, so they land here on first enhance job.
+gfpgan/weights/
+
+# Local venvs
+.venv/
+venv/
+
+# Local planning / working notes (agent scratch, not part of the product)
+PLAN.md
+PLAN_LATENTSYNC_1.5.md
+tasks/
+
+# Notebook / editor scratch
+.ipynb_checkpoints/
