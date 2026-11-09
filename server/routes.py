@@ -249,6 +249,221 @@ async def admin_config(request):
         return json_error(str(e))
 
 
+# ─── Remote GPU worker 配置 / 连通性测试 ────────────────────────────────────
+# Settings history: data/remote_worker.json (admin UI) > CLI/env. The test
+# endpoint performs a real gRPC Health call, so a green result means the port
+# is reachable AND a worker is actually serving on it (not just an open socket).
+
+def _probe_worker_blocking(address: str, timeout: float) -> dict:
+    """Blocking connect + Health + list of what is resident. Runs in executor."""
+    from remote.client import RemoteClient
+    client = RemoteClient(address, timeout=timeout)
+    try:
+        info = client.health()
+        return {"reachable": True, "health": info}
+    finally:
+        client.close()
+
+
+def _friendly_probe_error(exc: Exception) -> str:
+    """Turn a gRPC RpcError into something readable in a browser alert.
+
+    The raw exception carries a multi-line debug string and a trailing '>' that
+    is noise in a UI. Keep the useful part: transport vs. protocol failure.
+    """
+    text = str(exc)
+    if "Connection refused" in text or "failed to connect" in text:
+        return "connection refused — nothing is listening on that host:port"
+    if "StatusCode.UNAVAILABLE" in text:
+        return "worker unavailable (host unreachable, wrong port, or firewall)"
+    if "StatusCode.DEADLINE_EXCEEDED" in text or "Deadline Exceeded" in text:
+        return "timed out — the host responded too slowly"
+    if "StatusCode.UNIMPLEMENTED" in text:
+        return ("something is listening but it is not a LiveTalking worker "
+                "(wrong port?)")
+    # Fall back to the first line only.
+    first = text.strip().splitlines()[0] if text.strip() else type(exc).__name__
+    return first[:300]
+
+
+async def remote_worker_status(request):
+    """GET /api/remote/status — effective address, its source, CLI/env fallback."""
+    try:
+        from remote import settings
+        addr, source = settings.effective()
+        return json_ok(data={
+            "address": addr,
+            "source": source,
+            "saved": settings.saved_address(),
+            "env": settings.env_address(),
+            "credentials": settings.credentials_summary(),
+        })
+    except Exception as e:
+        logger.exception('remote_worker_status exception:')
+        return json_error(str(e))
+
+
+async def remote_credentials_save(request):
+    """POST /api/remote/credentials {"username","host","password"}.
+
+    Password goes to the OS keychain; username/host to the settings file.
+    The response NEVER echoes the password back.
+    """
+    try:
+        from remote import settings
+        params = {}
+        if request.can_read_body:
+            try:
+                params = await request.json()
+            except Exception:
+                params = {}
+        settings.save_credentials(
+            params.get("username", ""),
+            params.get("host", ""),
+            params.get("password", ""))
+        return json_ok(data={"credentials": settings.credentials_summary()})
+    except ValueError as e:
+        return json_error(str(e))
+    except RuntimeError as e:
+        # keychain unavailable / package missing
+        return json_error(str(e))
+    except Exception as e:
+        logger.exception('remote_credentials_save exception:')
+        return json_error(str(e))
+
+
+async def remote_credentials_clear(request):
+    """POST /api/remote/credentials/clear — delete the keychain entry + metadata."""
+    try:
+        from remote import settings
+        settings.clear_credentials()
+        return json_ok(data={"credentials": settings.credentials_summary()})
+    except Exception as e:
+        logger.exception('remote_credentials_clear exception:')
+        return json_error(str(e))
+
+
+def _ssh_probe_blocking(username: str, host: str, password: str, port: int,
+                        expected_fp, trust_new: bool) -> dict:
+    from remote import ssh_test
+    return ssh_test.test_ssh(username, host, password, port=port,
+                             expected_fingerprint=expected_fp,
+                             trust_new=trust_new)
+
+
+async def remote_ssh_test(request):
+    """POST /api/remote/ssh-test — real SSH login using the stored credentials.
+
+    Body may override host/port. Body password is optional: when omitted, the
+    stored keychain password is used (so the UI never has to hold it).
+    """
+    try:
+        import asyncio
+        from remote import settings, ssh_test
+
+        params = {}
+        if request.can_read_body:
+            try:
+                params = await request.json()
+            except Exception:
+                params = {}
+
+        stored = settings.get_credentials() or {}
+        username = (params.get("username") or stored.get("username") or "").strip()
+        host = (params.get("host") or stored.get("host") or "").strip()
+        password = params.get("password") or stored.get("password") or ""
+        port = int(params.get("port") or ssh_test.DEFAULT_SSH_PORT)
+        trust_new = bool(params.get("trust_new"))
+
+        if not username or not host:
+            return json_error("username and host are required")
+        if not password:
+            return json_error("no password — save credentials first, or supply one")
+
+        expected_fp = settings.pinned_host_keys().get(host)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, _ssh_probe_blocking, username, host, password, port,
+            expected_fp, trust_new)
+
+        # Pin on success so a later key change is refused.
+        if result.get("ok") and result.get("fingerprint"):
+            settings.pin_host_key(host, result["fingerprint"])
+
+        return json_ok(data=result)
+    except ValueError as e:
+        return json_error(str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.exception('remote_ssh_test exception:')
+        return json_ok(data={"ok": False, "message": str(e)})
+
+
+async def remote_worker_save(request):
+    """POST /api/remote/save {"address": "host:port"|""} — persist the address."""
+    try:
+        from remote import settings
+        params = {}
+        if request.can_read_body:
+            try:
+                params = await request.json()
+            except Exception:
+                params = {}
+        address = params.get("address", "")
+        if not (address or "").strip():
+            settings.clear_saved()
+        else:
+            settings.save_address(address)
+        addr, source = settings.effective()
+        return json_ok(data={"address": addr, "source": source})
+    except ValueError as e:
+        return json_error(str(e))
+    except Exception as e:
+        logger.exception('remote_worker_save exception:')
+        return json_error(str(e))
+
+
+async def remote_worker_test(request):
+    """POST /api/remote/test {"address": "host:port"}? — real gRPC Health probe.
+
+    The address in the body is tested WITHOUT saving it, so you can check a
+    host before committing it. Falls back to the effective address when absent
+    or empty.
+    """
+    address = ""
+    try:
+        from remote import settings
+        params = {}
+        if request.can_read_body:
+            try:
+                params = await request.json()
+            except Exception:
+                params = {}
+        raw = params.get("address")
+        address = settings.normalize(raw) if (raw or "").strip() else settings.effective_address()
+        if not address:
+            return json_error("no address to test — enter one first")
+        # gRPC is blocking; keep the event loop free.
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _probe_worker_blocking, address, 5.0)
+        info = result.get("health", {})
+        return json_ok(data={
+            "address": address,
+            "reachable": True,
+            "device": info.get("device", ""),
+            "gpu": info.get("detail", ""),
+            "backend": info.get("backend", ""),
+            "avatar_id": info.get("avatar_id", ""),
+            "cuda": info.get("device") == "cuda",
+        })
+    except ValueError as e:
+        return json_error(str(e))
+    except Exception as e:  # noqa: BLE001
+        # Unreachable is an expected outcome, not a server error: report it as a
+        # normal (code 0) payload with reachable=false so the UI can render it.
+        logger.warning('[remote] test failed for %s: %s', address or "?", e)
+        return json_ok(data={"address": address, "reachable": False,
+                             "error": _friendly_probe_error(e)})
+
 
 async def admin_sessions(request):
     """Admin: 获取活跃的会话及其配置"""
@@ -302,6 +517,12 @@ def setup_routes(app):
     app.router.add_post("/is_speaking", is_speaking)
     app.router.add_get("/api/admin/config", admin_config)
     app.router.add_get("/api/admin/sessions", admin_sessions)
+    app.router.add_get("/api/remote/status", remote_worker_status)
+    app.router.add_post("/api/remote/save", remote_worker_save)
+    app.router.add_post("/api/remote/test", remote_worker_test)
+    app.router.add_post("/api/remote/credentials", remote_credentials_save)
+    app.router.add_post("/api/remote/credentials/clear", remote_credentials_clear)
+    app.router.add_post("/api/remote/ssh-test", remote_ssh_test)
     app.router.add_get("/api/model/status", model_status)
     app.router.add_post("/api/model/unload", model_unload)
     app.router.add_post("/api/app/restart", app_restart)

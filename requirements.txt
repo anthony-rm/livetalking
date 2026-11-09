@@ -49,6 +49,17 @@ dashscope
 #gradio_client
 #azure-cognitiveservices-speech
 
+# --- Remote GPU worker (Option B: Mac host + Windows/NVIDIA compute) ---
+# Serve avatar inference + the enhance pipeline on a remote CUDA box; see
+# docs/remote-gpu.md. grpcio-tools is only needed to regenerate stubs.
+grpcio
+grpcio-tools
+# Secure storage of the PC credentials entered in the admin console: the
+# password goes to the OS keychain (Keychain Access / Credential Manager),
+# never to a file in the repo. paramiko backs the real SSH login test.
+keyring
+paramiko
+
 #typeguard==2.13.3
 #onnxruntime-gpu
 
@@ -56,3 +67,32 @@ dashscope
 # Optional: remove these lines if you don't need local ASR
 #funasr
 #modelscope
+
+# --- Avatar video preprocessing (docs/intent/avatar-video-preprocessing.md) ---
+# Enhance/clean a base video before avatar extraction:
+#   RVM person matting (loaded via torch.hub, no pip package), Real-ESRGAN
+#   super-resolution, GFPGAN face restoration. basicsr is pulled in transitively.
+# scripts/patch_basicsr.py (run at the end of setup.sh) fixes basicsr 1.4.2's
+# import of torchvision.transforms.functional_tensor, removed in torchvision 0.17+.
+onnxruntime
+realesrgan
+gfpgan
+
+# --- MuseTalk avatar generation (avatars/musetalk/utils/preprocessing.py) ---
+# That module imports `face_recognition`, which needs the dlib backend. dlib has
+# no prebuilt wheels on PyPI, so a plain `pip install face-recognition` compiles
+# it from source (needs cmake + a C++ toolchain, several minutes).
+# Instead install in this order, which uses the prebuilt `dlib-bin` wheel:
+#
+#   pip install dlib-bin face_recognition_models "setuptools<81"
+#   pip install --no-deps face-recognition
+#
+# `--no-deps` matters: face-recognition declares `dlib>=19.7`, which pip would
+# otherwise try to build from source. `dlib-bin` provides the same `dlib`
+# module, but not the `dlib` distribution metadata, so the requirement is never
+# considered satisfied.
+# `setuptools<81` is required because face_recognition_models imports the
+# removed `pkg_resources` module.
+# These are installed by setup.sh; they are intentionally not listed above
+# because requirements.txt cannot express the needed install order.
+

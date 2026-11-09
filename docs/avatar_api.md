@@ -103,6 +103,62 @@ GET /api/avatar/tasks
 
 ---
 
+## 3b. 可用生成模型（registry）
+
+```
+GET /api/avatar/models
+```
+
+返回后端注册的 avatar 生成模型及其可调参数。Web 页面（`/avatar.html`）的
+模型下拉框和 “Advanced” 参数表单都由该接口渲染，新增后端只需在
+`server/avatar_routes.py` 的 `AVATAR_GENERATORS` 中登记。
+
+**响应**:
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "default": "wav2lip",
+    "models": [
+      {
+        "id": "wav2lip",
+        "label": "Wav2Lip",
+        "params": [
+          { "name": "img_size", "label": "Image size", "type": "int",
+            "default": 256, "min": 32, "max": 512 },
+          { "name": "pads", "label": "Pads (top bottom left right)",
+            "type": "text", "default": "0 10 0 0" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`type` 取值：`int` / `bool` / `select`（带 `options`）/ `text`。
+
+---
+
+## 3c. 增强 → 生成 的链式任务
+
+`POST /api/enhance/task`（base video 预处理）可以携带一个可选的 avatar 规格：
+增强任务成功完成后，后端自动用 `enhanced.mp4` 创建 genavatar 任务，页面刷新后
+依然能从增强任务的 `avatar_task_id` 字段看到关联。
+
+| 参数 | 说明 |
+|------|------|
+| `avatar_model` | `wav2lip` / `musetalk`（可选，缺省则只做增强） |
+| `avatar_id` | 目标 avatar 目录名 |
+| `avatar_params` | JSON 字符串，模型参数，同上表 |
+
+JSON 请求体也可用嵌套形式 `{"avatar": {"model": "...", "avatar_id": "...", "params": {...}}}`。
+
+对应的 avatar 任务在 `GET /api/avatar/tasks` 中返回 `source_job`（来源增强任务 ID）。
+
+---
+
 ## 4. 删除任务
 
 ```
