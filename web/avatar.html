@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Avatar 生成 - LiveTalking</title>
+    <title>Avatar Studio - LiveTalking</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
     <style>
@@ -11,6 +11,7 @@
             --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             --glass-bg: rgba(255, 255, 255, 0.9);
             --card-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
+            --accent: #4361ee;
         }
 
         body {
@@ -28,11 +29,6 @@
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
 
-        .container {
-            max-width: 1000px;
-            margin-top: 30px;
-        }
-
         .glass-card {
             background: var(--glass-bg);
             backdrop-filter: blur(10px);
@@ -46,21 +42,15 @@
         .card-header {
             background: transparent;
             border-bottom: 1px solid rgba(0,0,0,0.05);
-            padding: 20px;
+            padding: 16px 20px;
             font-weight: 700;
-            font-size: 1.2rem;
+            font-size: 1.05rem;
             display: flex;
             align-items: center;
         }
 
-        .card-header i {
-            margin-right: 10px;
-            color: #667eea;
-        }
-
-        .card-body {
-            padding: 25px;
-        }
+        .card-header > i { margin-right: 10px; color: #667eea; }
+        .card-body { padding: 20px; }
 
         .btn-submit {
             background: var(--primary-gradient);
@@ -71,55 +61,91 @@
             border-radius: 10px;
             transition: transform 0.2s;
         }
+        .btn-submit:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(118, 75, 162, 0.4); color: white; }
+        .btn-submit:disabled { opacity: .6; transform: none; box-shadow: none; }
 
-        .btn-submit:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(118, 75, 162, 0.4);
-            color: white;
-        }
-
-        .task-item {
-            border-bottom: 1px solid #eee;
-            padding: 15px 0;
-            transition: background 0.2s;
-        }
-
-        .task-item:last-child {
-            border-bottom: none;
-        }
-
-        .progress {
-            height: 10px;
-            border-radius: 5px;
-            margin-top: 10px;
-        }
-
-        .badge-status {
-            font-size: 0.8rem;
-            padding: 5px 10px;
-            border-radius: 20px;
-        }
-
-        .status-pending { background: #ffeaa7; color: #d63031; }
-        .status-running { background: #81ecec; color: #00cec9; }
-        .status-completed { background: #55efc4; color: #00b894; }
-        .status-failed { background: #ff7675; color: #d63031; }
-
+        label.form-label { font-weight: 500; font-size: .85rem; color: #64748b; margin-bottom: 3px; }
         .param-group {
             background: #f8f9fa;
-            padding: 15px;
+            padding: 14px;
             border-radius: 10px;
-            margin-top: 15px;
+            margin-top: 10px;
+            border: 1px solid rgba(0,0,0,.04);
         }
+        .param-group label.form-label { font-size: .75rem; }
+        .hint { font-size: .73rem; color: #94a3b8; line-height: 1.4; }
 
-        .refresh-spinner {
-            font-size: 0.8rem;
-            color: #b2bec3;
-            margin-left: auto;
+        .drop {
+            border: 2px dashed #cbd5e1; border-radius: 12px; padding: 20px;
+            text-align: center; color: #64748b; cursor: pointer; background: #fbfcfe;
+            transition: border-color .15s, background .15s;
         }
+        .drop:hover, .drop.drag { border-color: var(--accent); background: #f2f6ff; }
+        .drop strong { color: #1e293b; font-weight: 600; }
+        .drop .fname { display: block; margin-top: 6px; font-family: ui-monospace, Menlo, monospace; font-size: .73rem; color: var(--accent); }
 
+        .switch-row {
+            display: flex; align-items: center; gap: 10px;
+            background: #eef3ff; border: 1px solid #dbe4ff; border-radius: 10px; padding: 10px 14px;
+        }
+        .switch-row .form-check-input { margin: 0; flex: none; }
+        .switch-row .txt { font-size: .86rem; font-weight: 600; color: #334155; }
+        .switch-row .sub { font-size: .72rem; color: #7b8794; line-height: 1.35; }
+
+        .tabs { display: flex; gap: 6px; margin-left: auto; margin-right: 8px; }
+        .tabs button {
+            border: 1px solid #e2e8f0; background: #fff; color: #64748b;
+            border-radius: 18px; font-size: .72rem; padding: 2px 12px; font-weight: 600;
+        }
+        .tabs button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+        .task-item {
+            border: 1px solid #eef1f5; border-radius: 12px;
+            padding: 11px 13px; margin-bottom: 9px; background: #fff;
+            cursor: pointer; transition: border-color .15s, box-shadow .15s;
+        }
+        .task-item:hover { border-color: #c9d6f5; }
+        .task-item.sel { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(67,97,238,.10); }
+        .task-item .tid { font-family: ui-monospace, Menlo, monospace; font-size: .73rem; color: #64748b; }
+        .task-item .when { font-size: .68rem; color: #94a3b8; }
+        .task-item .meta { font-size: .76rem; color: #64748b; }
+
+        .badge-status { font-size: .66rem; padding: 3px 9px; border-radius: 20px; font-weight: 700; letter-spacing: .02em; }
+        .status-pending   { background: #ffeaa7; color: #a4730f; }
+        .status-running   { background: #d6f5f4; color: #0f8f8a; }
+        .status-completed { background: #d8f8ea; color: #12805c; }
+        .status-failed    { background: #ffe0e0; color: #b02525; }
+        .status-cancelled { background: #eceff3; color: #64748b; }
+
+        .progress { height: 6px; border-radius: 4px; margin-top: 8px; background: #eef1f5; }
+        .progress-bar { background: var(--primary-gradient); }
+
+        .stage {
+            background: repeating-linear-gradient(45deg, #f3f5f9 0 10px, #f8fafc 10px 20px);
+            border-radius: 12px; padding: 16px; display: flex; justify-content: center;
+        }
+        .frame {
+            width: 230px; aspect-ratio: 9 / 16; background: #000; border-radius: 8px;
+            overflow: hidden; display: grid; place-items: center;
+        }
+        .frame video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+        .frame .placeholder { color: #94a3b8; font-size: .73rem; text-align: center; padding: 14px; }
+
+        .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: .76rem; }
+        .kv .k { color: #94a3b8; }
+        .kv .v { font-family: ui-monospace, Menlo, monospace; color: #475569; overflow-wrap: anywhere; }
+
+        .err { color: #b02525; font-size: .76rem; font-family: ui-monospace, Menlo, monospace; white-space: pre-wrap; }
+        .ok  { color: #12805c; font-size: .76rem; }
+        .section-label {
+            font-size: .73rem; color: #64748b; font-weight: 600; letter-spacing: .02em;
+            padding-top: 12px; border-top: 1px solid #eef1f5; margin-top: 6px;
+        }
+        .refresh-spinner { font-size: .72rem; color: #b2bec3; }
         .spin { animation: rotation 1s linear infinite; }
         @keyframes rotation { from { transform: rotate(0deg); } to { transform: rotate(359deg); } }
+
+        .scroll { max-height: 620px; overflow-y: auto; }
     </style>
 </head>
 <body>
@@ -128,89 +154,261 @@
     <div class="container-fluid px-4">
         <a class="navbar-brand" href="#">
             <i class="bi bi-person-bounding-box me-2"></i>
-            LiveTalking Avatar 生成系统
+            LiveTalking Avatar Studio
         </a>
+        <span class="text-white-50 small d-none d-md-inline">base video → enhanced clip → digital human avatar</span>
     </div>
 </nav>
 
-<div class="container">
-    <div class="row">
-        <!-- 提交任务表单 -->
-        <div class="col-lg-5">
+<div class="container-fluid px-4">
+    <div class="row g-4">
+        <!-- ── Left: create ─────────────────────────────────────────── -->
+        <div class="col-xl-5">
             <div class="glass-card">
                 <div class="card-header">
-                    <i class="bi bi-plus-circle-fill"></i> 创建新生成任务
+                    <i class="bi bi-plus-circle-fill"></i> Create Avatar
+                    <span class="refresh-spinner ms-auto" id="modelSpinner">
+                        <i class="bi bi-arrow-repeat spin"></i>
+                    </span>
                 </div>
                 <div class="card-body">
                     <form id="taskForm">
+                        <!-- 1. source -->
                         <div class="mb-3">
-                            <label class="form-label">算法模型</label>
-                            <select class="form-select" name="model" id="modelSelect" required>
-                                <option value="wav2lip">Wav2Lip</option>
-                                <option value="musetalk">MuseTalk</option>
-                            </select>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Avatar ID</label>
-                            <input type="text" class="form-control" name="avatar_id" placeholder="如: wav2lip256_test" required>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">视频文件</label>
-                            <input type="file" class="form-control" name="video_file" accept="video/*" required>
+                            <label class="form-label">1 — Source clip</label>
+                            <div id="drop" class="drop">
+                                <strong><i class="bi bi-cloud-arrow-up me-1"></i>Drop a video</strong> or click to choose
+                                <span class="fname" id="fname">no file selected</span>
+                                <input id="file" type="file" accept="video/*" hidden>
+                            </div>
+                            <input type="text" class="form-control form-control-sm mt-2" id="vpath"
+                                   placeholder="…or a path on this machine: /path/to/clip.mov">
                         </div>
 
-                        <div class="mb-3">
-                            <a class="text-decoration-none" data-bs-toggle="collapse" href="#advancedParams" role="button">
-                                <i class="bi bi-gear me-1"></i> 高级参数 (可选)
+                        <!-- 2. enhance -->
+                        <div class="switch-row mb-2">
+                            <div class="form-check form-switch m-0">
+                                <input class="form-check-input" type="checkbox" id="enhanceOn" checked>
+                            </div>
+                            <div>
+                                <div class="txt">Enhance before creating</div>
+                                <div class="sub">Matte, lighting, face restore, recomposed on a flat canvas.
+                                    Without an avatar ID this only enhances the clip.</div>
+                            </div>
+                        </div>
+
+                        <div id="enhanceOpts">
+                            <a class="text-decoration-none small" data-bs-toggle="collapse" href="#canvasOpts" role="button">
+                                <i class="bi bi-aspect-ratio me-1"></i> Canvas &amp; look
                             </a>
-                            <div class="collapse mt-2" id="advancedParams">
+                            <div class="collapse show" id="canvasOpts">
                                 <div class="param-group">
-                                    <div class="row">
-                                        <div class="col-6 mb-2">
-                                            <label class="form-label small">图像大小</label>
-                                            <input type="number" class="form-control form-control-sm" name="img_size" id="imgSizeInput" value="256">
+                                    <div class="row g-2">
+                                        <div class="col-6">
+                                            <label class="form-label">Preset</label>
+                                            <select class="form-select form-select-sm" id="preset">
+                                                <option value="1080x1920">1080 × 1920 (9:16)</option>
+                                                <option value="720x1280">720 × 1280 (9:16)</option>
+                                                <option value="1920x1080">1920 × 1080 (16:9)</option>
+                                                <option value="custom">custom…</option>
+                                            </select>
                                         </div>
-                                        <div class="col-6 mb-2">
-                                            <label class="form-label small">BBox Shift (musetalk)</label>
-                                            <input type="number" class="form-control form-control-sm" name="bbox_shift" value="0">
+                                        <div class="col-6">
+                                            <label class="form-label">Fit</label>
+                                            <select class="form-select form-select-sm" id="fit">
+                                                <option value="contain">contain</option>
+                                                <option value="cover">cover</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="form-label">Width</label>
+                                            <input type="number" class="form-control form-control-sm" id="w" value="1080">
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="form-label">Height</label>
+                                            <input type="number" class="form-control form-control-sm" id="h" value="1920">
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="form-label">Background</label>
+                                            <div class="input-group input-group-sm">
+                                                <input type="color" class="form-control form-control-color" id="bg" value="#1E1E1E">
+                                                <input type="text" class="form-control" id="bghex" value="#1E1E1E">
+                                            </div>
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="form-label">Super-res</label>
+                                            <select class="form-select form-select-sm" id="upscale">
+                                                <option value="1">off (fast)</option>
+                                                <option value="2">2× (slow)</option>
+                                                <option value="4">4× (very slow)</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="form-label">Enhance strength — <b id="strv">0.5</b></label>
+                                            <input type="range" class="form-range" id="strength" min="0" max="1" step="0.05" value="0.5">
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="form-label">Max frames</label>
+                                            <input type="number" class="form-control form-control-sm" id="maxf" placeholder="all">
                                         </div>
                                     </div>
-                                    <div class="row">
-                                        <div class="col-6 mb-2">
-                                            <label class="form-label small">Pads (上下左右)</label>
-                                            <input type="text" class="form-control form-control-sm" name="pads" value="0 10 0 0" placeholder="0 10 0 0">
-                                        </div>
-                                        <div class="col-6 mb-2">
-                                            <label class="form-label small">人脸检测批大小</label>
-                                            <input type="number" class="form-control form-control-sm" name="face_det_batch_size" value="4">
-                                        </div>
+                                    <div class="form-check form-switch mt-2">
+                                        <input class="form-check-input" type="checkbox" id="faces" checked>
+                                        <label class="form-check-label small" for="faces">Face restore (GFPGAN)</label>
+                                    </div>
+                                </div>
+                            </div>
+                            <p class="hint mb-0">Jobs queue on one worker. A 30-frame 1080p clip takes roughly a minute.</p>
+                        </div>
+
+                        <!-- 3. avatar -->
+                        <div class="mt-3">
+                            <label class="form-label">2 — Avatar</label>
+                            <div class="param-group mt-0">
+                                <div class="row g-2">
+                                    <div class="col-6">
+                                        <label class="form-label">Model</label>
+                                        <select class="form-select form-select-sm" name="model" id="modelSelect" required>
+                                            <option value="">Loading…</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-6">
+                                        <label class="form-label">Avatar ID</label>
+                                        <input type="text" class="form-control form-control-sm" name="avatar_id"
+                                               id="avatarId" list="avatarIds" placeholder="e.g. my_avatar_001" autocomplete="off">
+                                        <datalist id="avatarIds"></datalist>
+                                    </div>
+                                </div>
+                                <p class="hint mb-0 mt-2" id="avatarHint">
+                                    Leave the ID empty to only enhance the clip.
+                                </p>
+
+                                <div class="mt-2">
+                                    <a class="text-decoration-none small" data-bs-toggle="collapse" href="#advancedParams" role="button">
+                                        <i class="bi bi-gear me-1"></i> Advanced (model specific)
+                                    </a>
+                                    <div class="collapse mt-2" id="advancedParams">
+                                        <div class="row g-2" id="modelParams"></div>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
-                        <button type="submit" class="btn btn-submit w-100 mt-2" id="submitBtn">
-                            <i class="bi bi-cloud-arrow-up-fill me-2"></i>提交生成任务
+                        <button type="submit" class="btn btn-submit w-100 mt-3" id="submitBtn">
+                            <i class="bi bi-cloud-arrow-up-fill me-2"></i><span id="submitLabel">Enhance &amp; create avatar</span>
                         </button>
+                        <div class="err mt-2" id="formErr"></div>
                     </form>
                 </div>
             </div>
         </div>
 
-        <!-- 任务列表 -->
-        <div class="col-lg-7">
+        <!-- ── Right: tasks + detail ────────────────────────────────── -->
+        <div class="col-xl-7">
             <div class="glass-card">
                 <div class="card-header">
-                    <i class="bi bi-list-task"></i> 任务列表
-                    <span class="refresh-spinner" id="refreshInfo">
-                        <i class="bi bi-arrow-repeat spin"></i> 自动更新中...
-                    </span>
-                </div>
-                <div class="card-body" id="taskList" style="max-height: 600px; overflow-y: auto;">
-                    <div class="text-center py-5 text-muted">
-                        <div class="spinner-border spinner-border-sm me-2"></div>
-                        正在加载任务列表...
+                    <i class="bi bi-list-task"></i> Tasks
+                    <div class="tabs">
+                        <button type="button" data-filter="all" class="on">All</button>
+                        <button type="button" data-filter="enhance">Enhance</button>
+                        <button type="button" data-filter="avatar">Avatars</button>
                     </div>
+                    <span class="refresh-spinner"><i class="bi bi-arrow-repeat spin"></i></span>
+                </div>
+                <div class="card-body">
+                    <div class="scroll" id="taskList">
+                        <div class="text-center py-5 text-muted">
+                            <div class="spinner-border spinner-border-sm me-2"></div>
+                            Loading tasks…
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- detail: enhance job -->
+            <div class="glass-card" id="detail-enhance" hidden>
+                <div class="card-header">
+                    <i class="bi bi-magic"></i>
+                    <span class="tid" id="e-id"></span>
+                    <span class="badge-status ms-2" id="e-status"></span>
+                    <span class="ms-2 small text-muted" id="e-phase"></span>
+                    <div class="ms-auto d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-secondary" id="e-cancel" hidden>Cancel</button>
+                        <button class="btn btn-sm btn-outline-danger" id="e-delete" hidden>Delete</button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-5">
+                            <div class="stage">
+                                <div class="frame" id="e-frame">
+                                    <div class="placeholder" id="e-placeholder">Result appears here</div>
+                                    <video id="e-video" controls playsinline hidden></video>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-7">
+                            <div class="progress mt-0"><div class="progress-bar" id="e-bar" style="width:0%"></div></div>
+                            <div class="d-flex justify-content-between small text-muted mt-1">
+                                <span id="e-phase2">—</span><span id="e-pct">0%</span>
+                            </div>
+                            <div class="err mt-2" id="e-err"></div>
+                            <div class="kv mt-3" id="e-kv"></div>
+                            <a id="e-download" class="btn btn-sm btn-outline-primary w-100 mt-3" href="#" hidden>
+                                <i class="bi bi-download me-1"></i>Download mp4
+                            </a>
+                        </div>
+                    </div>
+
+                    <div class="section-label mt-3">Swap background — reuses the saved matte, takes seconds</div>
+                    <div class="row g-2 align-items-end mt-1">
+                        <div class="col-6 col-md-5">
+                            <label class="form-label">New colour</label>
+                            <div class="input-group input-group-sm">
+                                <input type="color" class="form-control form-control-color" id="e-bg" value="#1E50FF">
+                                <input type="text" class="form-control" id="e-bghex" value="#1E50FF">
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <button class="btn btn-sm btn-outline-secondary w-100" id="e-swap">Swap</button>
+                        </div>
+                    </div>
+
+                    <div class="section-label mt-3">Make an avatar from this result</div>
+                    <div class="row g-2 align-items-end mt-1">
+                        <div class="col-4 col-md-3">
+                            <label class="form-label">Model</label>
+                            <select class="form-select form-select-sm" id="e-model"></select>
+                        </div>
+                        <div class="col-8 col-md-5">
+                            <label class="form-label">Avatar ID</label>
+                            <input type="text" class="form-control form-control-sm" id="e-avatarid" list="avatarIds" autocomplete="off">
+                        </div>
+                        <div class="col-12 col-md-4">
+                            <button class="btn btn-sm btn-outline-primary w-100" id="e-avatar">Create</button>
+                        </div>
+                    </div>
+                    <div class="ok mt-2" id="e-avatar-msg"></div>
+                </div>
+            </div>
+
+            <!-- detail: avatar task -->
+            <div class="glass-card" id="detail-avatar" hidden>
+                <div class="card-header">
+                    <i class="bi bi-person-badge"></i>
+                    <span class="tid" id="a-id"></span>
+                    <span class="badge-status ms-2" id="a-status"></span>
+                    <div class="ms-auto d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-danger" id="a-cancel" hidden>Cancel</button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="progress mt-0"><div class="progress-bar" id="a-bar" style="width:0%"></div></div>
+                    <div class="d-flex justify-content-between small text-muted mt-1">
+                        <span id="a-phase">generating avatar artifacts…</span><span id="a-pct">0%</span>
+                    </div>
+                    <div class="err mt-2" id="a-err"></div>
+                    <div class="kv mt-3" id="a-kv"></div>
                 </div>
             </div>
         </div>
@@ -219,128 +417,546 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    const taskForm = document.getElementById('taskForm');
-    const submitBtn = document.getElementById('submitBtn');
-    const taskList = document.getElementById('taskList');
+const $ = (id) => document.getElementById(id);
+const ENHANCE_API = "/api/enhance";
+const AVATAR_API = "/api/avatar";
 
-    // 提交任务
-    taskForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        submitBtn.disabled = true;
-        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>正在上传并创建任务...';
+const state = {
+    models: {},          // id -> {label, params: [...]}
+    modelOrder: [],
+    defaultModel: null,
+    avatars: [],
+    enhance: {},         // task_id -> job
+    avatar: {},          // task_id -> task
+    filter: "all",
+    selected: null,      // {kind: "enhance"|"avatar", id}
+    uploadFile: null,
+    poll: null,
+    detailKey: null,     // guards input overwrites on each poll
+};
 
-        const formData = new FormData(taskForm);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
+    ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 
-        try {
-            const response = await fetch('/api/avatar/task', {
-                method: 'POST',
-                body: formData
-            });
-            const result = await response.json();
-
-            if (result.code === 0) {
-                alert('任务提交成功! Task ID: ' + result.data.task_id);
-                refreshTasks();
-            } else {
-                alert('提交失败: ' + result.msg);
-            }
-        } catch (error) {
-            console.error('Error:', error);
-            alert('提交发生网络错误');
-        } finally {
-            submitBtn.disabled = false;
-            submitBtn.innerHTML = '<i class="bi bi-cloud-arrow-up-fill me-2"></i>提交生成任务';
+// ── registry: models and their params come from the backend ─────────────────
+async function loadModels() {
+    try {
+        const r = await fetch(`${AVATAR_API}/models`);
+        const j = await r.json();
+        if (j.code !== 0) throw new Error(j.msg);
+        state.models = {};
+        state.modelOrder = [];
+        for (const m of j.data.models) {
+            state.models[m.id] = m;
+            state.modelOrder.push(m.id);
         }
+        state.defaultModel = j.data.default || state.modelOrder[0];
+        $("modelSpinner").style.display = "none";
+        fillModelSelects();
+        renderModelParams();
+    } catch (e) {
+        $("modelSpinner").innerHTML = '<span class="text-danger small">model list failed</span>';
+        console.error("loadModels", e);
+    }
+}
+
+function fillModelSelects() {
+    const opts = state.modelOrder.map(id =>
+        `<option value="${esc(id)}">${esc(state.models[id].label)}</option>`).join("");
+    const main = $("modelSelect");
+    const prev = main.value;
+    main.innerHTML = opts;
+    if (state.models[prev]) main.value = prev;
+    const detail = $("e-model");
+    const prevDetail = detail.value;
+    detail.innerHTML = opts;
+    if (state.models[prevDetail]) detail.value = prevDetail;
+}
+
+function renderModelParams() {
+    const spec = state.models[$("modelSelect").value];
+    const box = $("modelParams");
+    if (!spec) { box.innerHTML = ""; return; }
+    box.innerHTML = spec.params.map(p => {
+        const id = `mp-${p.name}`;
+        const label = `<label class="form-label">${esc(p.label)}</label>`;
+        if (p.type === "bool") {
+            return `<div class="col-12"><div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="${id}" data-param="${esc(p.name)}"
+                    ${p.default ? "checked" : ""}>
+                <label class="form-check-label small" for="${id}">${esc(p.label)}</label></div></div>`;
+        }
+        if (p.type === "select") {
+            const opts = (p.options || []).map(o =>
+                `<option value="${esc(o)}" ${o === p.default ? "selected" : ""}>${esc(o)}</option>`).join("");
+            return `<div class="col-6">${label}
+                <select class="form-select form-select-sm" data-param="${esc(p.name)}" id="${id}">${opts}</select></div>`;
+        }
+        const attrs = p.type === "int"
+            ? `type="number" ${p.min != null ? `min="${p.min}"` : ""} ${p.max != null ? `max="${p.max}"` : ""}`
+            : `type="text"`;
+        const hint = p.hint ? `<div class="hint">${esc(p.hint)}</div>` : "";
+        return `<div class="col-6">${label}
+            <input class="form-control form-control-sm" ${attrs} data-param="${esc(p.name)}"
+                id="${id}" value="${esc(p.default ?? "")}">${hint}</div>`;
+    }).join("");
+}
+
+function collectModelParams() {
+    const out = {};
+    $("modelParams").querySelectorAll("[data-param]").forEach(el => {
+        if (el.type === "checkbox") out[el.dataset.param] = el.checked;
+        else if (el.value !== "") out[el.dataset.param] = el.value;
     });
+    return out;
+}
 
-    // 刷新任务列表
-    async function refreshTasks() {
-        try {
-            const response = await fetch('/api/avatar/tasks');
-            const result = await response.json();
+// ── file picking ────────────────────────────────────────────────────────────
+$("drop").addEventListener("click", () => $("file").click());
+["dragover", "dragenter"].forEach(ev => $("drop").addEventListener(ev, e => {
+    e.preventDefault(); $("drop").classList.add("drag");
+}));
+["dragleave", "drop"].forEach(ev => $("drop").addEventListener(ev, e => {
+    e.preventDefault(); $("drop").classList.remove("drag");
+}));
+$("drop").addEventListener("drop", e => {
+    const f = e.dataTransfer.files[0];
+    if (f) setFile(f);
+});
+$("file").addEventListener("change", e => { if (e.target.files[0]) setFile(e.target.files[0]); });
+function setFile(f) {
+    state.uploadFile = f;
+    $("fname").textContent = `${f.name} · ${(f.size / 1048576).toFixed(1)} MB`;
+    $("vpath").value = "";
+}
+$("vpath").addEventListener("input", e => {
+    if (e.target.value.trim()) { state.uploadFile = null; $("fname").textContent = "no file selected"; }
+});
 
-            if (result.code === 0) {
-                renderTasks(result.data.tasks);
-            }
-        } catch (error) {
-            console.error('Load tasks failed:', error);
-        }
+// ── canvas / colour helpers ─────────────────────────────────────────────────
+$("preset").addEventListener("change", e => {
+    if (e.target.value === "custom") return;
+    const [w, h] = e.target.value.split("x").map(Number);
+    $("w").value = w; $("h").value = h;
+});
+function syncColor(colorEl, hexEl) {
+    colorEl.addEventListener("input", () => hexEl.value = colorEl.value.toUpperCase());
+    hexEl.addEventListener("change", () => {
+        const v = hexEl.value.trim();
+        if (/^#[0-9a-fA-F]{6}$/.test(v)) colorEl.value = v;
+        else hexEl.value = colorEl.value.toUpperCase();
+    });
+}
+syncColor($("bg"), $("bghex"));
+syncColor($("e-bg"), $("e-bghex"));
+$("strength").addEventListener("input", e => $("strv").textContent = e.target.value);
+
+// ── the enhance switch decides what the form submits ────────────────────────
+$("enhanceOn").addEventListener("change", updateFormMode);
+$("avatarId").addEventListener("input", updateFormMode);
+$("modelSelect").addEventListener("change", renderModelParams);
+
+function updateFormMode() {
+    const enhance = $("enhanceOn").checked;
+    const hasId = $("avatarId").value.trim() !== "";
+    $("enhanceOpts").style.display = enhance ? "" : "none";
+    $("submitLabel").textContent = enhance
+        ? (hasId ? "Enhance & create avatar" : "Enhance clip only")
+        : "Create avatar";
+    $("avatarHint").textContent = enhance
+        ? (hasId ? "The enhanced clip is handed to the generator automatically when enhancement finishes."
+                 : "Leave the ID empty to only enhance the clip.")
+        : "Creates the avatar straight from your clip, without the enhance step.";
+}
+
+// ── submit ──────────────────────────────────────────────────────────────────
+$("taskForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    $("formErr").textContent = "";
+    const path = $("vpath").value.trim();
+    if (!state.uploadFile && !path) { $("formErr").textContent = "Choose a file or enter a path."; return; }
+
+    const model = $("modelSelect").value;
+    const avatarId = $("avatarId").value.trim();
+    const enhance = $("enhanceOn").checked;
+    const params = collectModelParams();
+
+    if (!model) { $("formErr").textContent = "Pick a model."; return; }
+    if (!enhance && !avatarId) {
+        $("formErr").textContent = "An avatar ID is required when enhancement is off.";
+        return;
     }
+    if (avatarId && state.avatars.includes(avatarId) &&
+        !confirm(`Avatar "${avatarId}" already exists and will be overwritten. Continue?`)) return;
 
-    function renderTasks(tasks) {
-        if (!tasks || tasks.length === 0) {
-            taskList.innerHTML = '<div class="text-center py-5 text-muted">暂无任务</div>';
-            return;
+    const btn = $("submitBtn");
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Submitting…';
+
+    try {
+        let result;
+        if (enhance) {
+            const fd = new FormData();
+            if (state.uploadFile) fd.append("video_file", state.uploadFile);
+            if (path) fd.append("video_path", path);
+            fd.append("width", $("w").value || 1080);
+            fd.append("height", $("h").value || 1920);
+            fd.append("background", $("bghex").value);
+            fd.append("fit", $("fit").value);
+            fd.append("strength", $("strength").value);
+            fd.append("face_restore", $("faces").checked ? "true" : "false");
+            fd.append("upscale", $("upscale").value);
+            if ($("maxf").value) fd.append("max_frames", $("maxf").value);
+            if (avatarId) {
+                fd.append("avatar_model", model);
+                fd.append("avatar_id", avatarId);
+                fd.append("avatar_params", JSON.stringify(params));
+            }
+            const r = await fetch(`${ENHANCE_API}/task`, { method: "POST", body: fd });
+            result = await r.json();
+            if (result.code !== 0) throw new Error(result.msg);
+            state.selected = { kind: "enhance", id: result.data.task_id };
+        } else {
+            const fd = new FormData();
+            fd.append("model", model);
+            fd.append("avatar_id", avatarId);
+            for (const [k, v] of Object.entries(params)) fd.append(k, String(v));
+            if (state.uploadFile) fd.append("video_file", state.uploadFile);
+            if (path) fd.append("video_path", path);
+            const r = await fetch(`${AVATAR_API}/task`, { method: "POST", body: fd });
+            result = await r.json();
+            if (result.code !== 0) throw new Error(result.msg);
+            state.selected = { kind: "avatar", id: result.data.task_id };
         }
+        state.detailKey = null;
+        await refreshAll();
+        startPolling();
+    } catch (err) {
+        $("formErr").textContent = "Could not start: " + err.message;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-cloud-arrow-up-fill me-2"></i><span id="submitLabel"></span>';
+        updateFormMode();
+    }
+});
 
-        let html = '';
-        tasks.forEach(task => {
-            const date = new Date(task.start_time * 1000).toLocaleString();
-            const statusClass = `status-${task.status}`;
-            const isPending = task.status === 'pending';
+// ── polling ────────────────────────────────────────────────────────────────
+async function refreshAll() {
+    await Promise.all([loadEnhanceJobs(), loadAvatarTasks()]);
+    renderTaskList();
+    renderDetail();
+}
 
-            html += `
-                <div class="task-item">
-                    <div class="d-flex justify-content-between align-items-start mb-2">
-                        <div>
-                            <div class="fw-bold text-primary small"># ${task.task_id}</div>
-                            <div class="small text-muted mt-1">
-                                <span class="badge bg-secondary me-1">${task.model_type}</span>
-                                <span class="me-2">Avatar: <b>${task.avatar_id}</b></span>
-                            </div>
-                        </div>
-                        <div class="text-end">
-                            <span class="badge-status ${statusClass}">${task.status.toUpperCase()}</span>
-                            <div class="small text-muted mt-1" style="font-size: 0.7rem;">${date}</div>
-                        </div>
-                    </div>
+async function loadEnhanceJobs() {
+    try {
+        const r = await fetch(`${ENHANCE_API}/tasks`);
+        const j = await r.json();
+        if (j.code !== 0) return;
+        state.enhance = {};
+        for (const t of (j.data.tasks || [])) state.enhance[t.task_id] = t;
+    } catch (e) { console.error("enhance tasks", e); }
+}
 
-                    ${task.status !== 'completed' ? `
-                    <div class="progress">
-                        <div class="progress-bar progress-bar-striped progress-bar-animated"
-                             role="progressbar" style="width: ${task.progress}%"
-                             aria-valuenow="${task.progress}" aria-valuemin="0" aria-valuemax="100">
-                             ${task.progress}%
-                        </div>
-                    </div>` : ''}
+async function loadAvatarTasks() {
+    try {
+        const r = await fetch(`${AVATAR_API}/tasks`);
+        const j = await r.json();
+        if (j.code !== 0) return;
+        state.avatar = {};
+        for (const t of (j.data.tasks || [])) state.avatar[t.task_id] = t;
+    } catch (e) { console.error("avatar tasks", e); }
+}
 
-                    ${task.error_msg ? `<div class="alert alert-danger p-2 mt-2 small">${task.error_msg}</div>` : ''}
+function mergedTasks() {
+    const rows = [];
+    for (const [id, t] of Object.entries(state.enhance)) rows.push({ kind: "enhance", id, t });
+    for (const [id, t] of Object.entries(state.avatar)) rows.push({ kind: "avatar", id, t });
+    rows.sort((a, b) => (b.t.start_time || 0) - (a.t.start_time || 0));
+    return rows;
+}
 
-                    <div class="d-flex justify-content-end mt-2">
-                        ${isPending ? `
-                        <button class="btn btn-sm btn-outline-danger" onclick="deleteTask('${task.task_id}')">
-                            <i class="bi bi-trash"></i> 取消任务
-                        </button>` : ''}
-                    </div>
-                </div>
-            `;
+function startPolling() {
+    if (state.poll) return;
+    state.poll = setInterval(refreshAll, 1500);
+}
+
+// ── task list ──────────────────────────────────────────────────────────────
+document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click", () => {
+    document.querySelectorAll(".tabs button").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    state.filter = b.dataset.filter;
+    renderTaskList();
+}));
+
+function renderTaskList() {
+    const rows = mergedTasks().filter(r => state.filter === "all" || r.kind === state.filter);
+    const box = $("taskList");
+    if (!rows.length) {
+        box.innerHTML = '<div class="text-center py-5 text-muted">No tasks yet.</div>';
+        return;
+    }
+    box.innerHTML = "";
+    for (const row of rows) {
+        const isSel = state.selected && state.selected.kind === row.kind && state.selected.id === row.id;
+        const el = document.createElement("div");
+        el.className = "task-item" + (isSel ? " sel" : "");
+        el.innerHTML = taskRowHtml(row);
+        el.addEventListener("click", () => {
+            state.selected = { kind: row.kind, id: row.id };
+            state.detailKey = null;
+            renderTaskList();
+            renderDetail();
         });
-        taskList.innerHTML = html;
+        box.appendChild(el);
     }
+}
 
-    async function deleteTask(taskId) {
-        if (!confirm('确定要取消此 Pending 任务吗?')) return;
+function taskRowHtml({ kind, id, t }) {
+    const when = t.start_time
+        ? new Date(t.start_time * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : "";
+    const status = t.status || "pending";
+    let title, meta;
+    if (kind === "enhance") {
+        title = '<span class="badge bg-light text-dark border me-1">enhance</span>';
+        meta = `${esc(t.params?.fit || "contain")} · ${t.params?.width || 1080}×${t.params?.height || 1920}`;
+        if (t.params?.source_job) meta += ` · swap of #${esc(t.params.source_job)}`;
+        if (t.avatar) meta += ` · → avatar ${esc(t.avatar.avatar_id)}`;
+    } else {
+        title = '<span class="badge bg-light text-dark border me-1">avatar</span>';
+        meta = `<b>${esc(t.avatar_id)}</b> · ${esc(t.model_type)}`;
+        if (t.source_job) meta += ` · from #${esc(t.source_job)}`;
+    }
+    const showBar = status === "running" || status === "pending";
+    return `
+        <div class="d-flex justify-content-between align-items-start">
+            <div>${title}<span class="tid">#${esc(id)}</span>
+                <div class="meta mt-1">${meta}</div>
+            </div>
+            <div class="text-end">
+                <span class="badge-status status-${esc(status)}">${esc(status.toUpperCase())}</span>
+                <div class="when mt-1">${when}</div>
+            </div>
+        </div>
+        ${showBar ? `<div class="progress"><div class="progress-bar" style="width:${t.progress || 0}%"></div></div>` : ""}
+        ${t.error_msg ? `<div class="err mt-2">${esc(t.error_msg)}</div>` : ""}`;
+}
 
-        try {
-            const response = await fetch(`/api/avatar/task/${taskId}`, {
-                method: 'DELETE'
-            });
-            const result = await response.json();
-            if (result.code === 0) {
-                refreshTasks();
-            } else {
-                alert(result.msg);
-            }
-        } catch (error) {
-            alert('删除请求失败');
+// ── detail ─────────────────────────────────────────────────────────────────
+function renderDetail() {
+    const sel = state.selected;
+    if (!sel) {
+        $("detail-enhance").hidden = true;
+        $("detail-avatar").hidden = true;
+        return;
+    }
+    if (sel.kind === "enhance") {
+        const job = state.enhance[sel.id];
+        $("detail-avatar").hidden = true;
+        if (!job) { $("detail-enhance").hidden = true; return; }
+        $("detail-enhance").hidden = false;
+        renderEnhanceDetail(job);
+    } else {
+        const task = state.avatar[sel.id];
+        $("detail-enhance").hidden = true;
+        if (!task) { $("detail-avatar").hidden = true; return; }
+        $("detail-avatar").hidden = false;
+        renderAvatarDetail(task);
+    }
+}
+
+function renderEnhanceDetail(job) {
+    const key = "e:" + job.task_id;
+    const selChanged = state.detailKey !== key;
+    state.detailKey = key;
+
+    $("e-id").textContent = "#" + job.task_id;
+    $("e-status").textContent = job.status.toUpperCase();
+    $("e-status").className = "badge-status status-" + job.status;
+    $("e-phase").textContent = job.phase || "";
+    $("e-phase2").textContent = job.phase || "—";
+    $("e-pct").textContent = (job.status === "completed" ? 100 : job.progress) + "%";
+    $("e-bar").style.width = (job.progress || 0) + "%";
+    $("e-err").textContent = job.error_msg || "";
+
+    const vid = $("e-video"), ph = $("e-placeholder");
+    if (job.status === "completed" && job.has_result) {
+        // Only (re)assign the source once so the player is not restarted on poll.
+        if (vid.dataset.src !== job.task_id) {
+            vid.src = `${ENHANCE_API}/task/${job.task_id}/video?kind=enhanced&t=${Date.now()}`;
+            vid.dataset.src = job.task_id;
         }
+        vid.hidden = false; ph.hidden = true;
+        $("e-download").href = `${ENHANCE_API}/task/${job.task_id}/video?kind=enhanced&download=1`;
+        $("e-download").hidden = false;
+        vid.style.aspectRatio = `${job.params?.width || 1080} / ${job.params?.height || 1920}`;
+    } else {
+        vid.hidden = true;
+        if (vid.dataset.src) { vid.removeAttribute("src"); delete vid.dataset.src; }
+        ph.hidden = false;
+        ph.textContent = job.status === "failed" ? "Job failed"
+            : job.status === "cancelled" ? "Job cancelled"
+            : job.status === "running" ? (job.phase || "working…") : "Result appears here";
+        $("e-download").hidden = true;
     }
 
-    // 初始加载及自动定时刷新
-    refreshTasks();
-    setInterval(refreshTasks, 3000);
+    $("e-cancel").hidden = !(job.status === "pending" || job.status === "running");
+    $("e-delete").hidden = (job.status === "pending" || job.status === "running");
 
+    const kv = [["status", job.status]];
+    if (job.params?.fit) kv.push(["fit", job.params.fit]);
+    if (job.params?.background) kv.push(["background", job.params.background]);
+    if (job.result?.frames) kv.push(["frames", job.result.frames]);
+    if (job.duration) kv.push(["took", fmtDur(job.duration)]);
+    if (job.params?.source_job) kv.push(["swapped from", "#" + job.params.source_job]);
+    if (job.avatar) kv.push(["avatar", `${job.avatar.model} → ${job.avatar.avatar_id}`]);
+    if (job.avatar_task_id) kv.push(["avatar task", "#" + job.avatar_task_id]);
+    $("e-kv").innerHTML = kv.map(([k, v]) =>
+        `<span class="k">${esc(k)}</span><span class="v">${esc(v)}</span>`).join("");
+
+    $("e-swap").disabled = job.status !== "completed";
+    $("e-avatar").disabled = job.status !== "completed";
+
+    // Touch the inputs only when the selection changes, not on every poll.
+    if (selChanged) {
+        const bg = (job.params?.background || "#1E50FF").toUpperCase();
+        $("e-bg").value = bg;
+        $("e-bghex").value = bg;
+        $("e-avatarid").value = job.avatar?.avatar_id || "";
+        if (job.avatar?.model && state.models[job.avatar.model]) $("e-model").value = job.avatar.model;
+    }
+
+    const msg = $("e-avatar-msg");
+    if (job.avatar_error) {
+        msg.className = "err mt-2";
+        msg.textContent = "Avatar generation failed: " + job.avatar_error;
+    } else if (job.avatar_task_id) {
+        msg.className = "ok mt-2";
+        msg.textContent = `Avatar task #${job.avatar_task_id} started for `
+            + `${job.avatar?.model} → ${job.avatar?.avatar_id}`;
+    } else if (selChanged) {
+        msg.className = "ok mt-2";
+        msg.textContent = "";
+    }
+}
+
+function renderAvatarDetail(task) {
+    $("a-id").textContent = "#" + task.task_id;
+    $("a-status").textContent = task.status.toUpperCase();
+    $("a-status").className = "badge-status status-" + task.status;
+    $("a-pct").textContent = (task.progress || 0) + "%";
+    $("a-bar").style.width = (task.progress || 0) + "%";
+    $("a-err").textContent = task.error_msg || "";
+    $("a-phase").textContent = task.status === "completed" ? "avatar artifacts written to data/avatars/"
+        : task.status === "failed" ? "generation failed"
+        : "generating avatar artifacts…";
+    $("a-cancel").hidden = task.status !== "pending";
+
+    const kv = [
+        ["model", task.model_type],
+        ["avatar id", task.avatar_id],
+        ["status", task.status],
+    ];
+    if (task.source_job) kv.push(["from enhance job", "#" + task.source_job]);
+    if (task.duration) kv.push(["took", fmtDur(task.duration)]);
+    $("a-kv").innerHTML = kv.map(([k, v]) =>
+        `<span class="k">${esc(k)}</span><span class="v">${esc(v)}</span>`).join("");
+}
+
+function fmtDur(s) {
+    const m = Math.floor(s / 60), r = Math.round(s % 60);
+    return m ? `${m}m ${r}s` : `${r}s`;
+}
+
+// ── actions on an enhance job ──────────────────────────────────────────────
+$("e-cancel").addEventListener("click", async () => {
+    const sel = state.selected; if (!sel) return;
+    await fetch(`${ENHANCE_API}/task/${sel.id}/cancel`, { method: "POST" });
+    refreshAll();
+});
+
+$("e-delete").addEventListener("click", async () => {
+    const sel = state.selected; if (!sel) return;
+    if (!confirm("Delete this job and its artifacts?")) return;
+    const r = await fetch(`${ENHANCE_API}/task/${sel.id}`, { method: "DELETE" });
+    const j = await r.json();
+    if (j.code !== 0) { $("e-err").textContent = j.msg; return; }
+    state.selected = null; state.detailKey = null;
+    await refreshAll();
+});
+
+$("e-swap").addEventListener("click", async () => {
+    const sel = state.selected; if (!sel) return;
+    $("e-swap").disabled = true;
+    try {
+        const r = await fetch(`${ENHANCE_API}/task/${sel.id}/recompose`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ background: $("e-bghex").value }),
+        });
+        const j = await r.json();
+        if (j.code !== 0) throw new Error(j.msg);
+        state.selected = { kind: "enhance", id: j.data.task_id };
+        state.detailKey = null;
+        await refreshAll();
+    } catch (e) {
+        $("e-err").textContent = "Swap failed: " + e.message;
+    } finally { $("e-swap").disabled = false; }
+});
+
+$("e-avatar").addEventListener("click", async () => {
+    const sel = state.selected; if (!sel) return;
+    const model = $("e-model").value, avatar_id = $("e-avatarid").value.trim();
+    const msg = $("e-avatar-msg");
+    if (!avatar_id) { msg.className = "err mt-2"; msg.textContent = "Enter an avatar ID."; return; }
+    if (state.avatars.includes(avatar_id) &&
+        !confirm(`Avatar "${avatar_id}" already exists and will be overwritten. Continue?`)) return;
+    $("e-avatar").disabled = true;
+    try {
+        const r = await fetch(`${ENHANCE_API}/task/${sel.id}/avatar`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model, avatar_id }),
+        });
+        const j = await r.json();
+        if (j.code !== 0) throw new Error(j.msg);
+        msg.className = "ok mt-2";
+        msg.textContent = `Avatar task #${j.data.avatar_task_id} started for ${model} → ${avatar_id}`;
+        await refreshAll();
+    } catch (e) {
+        msg.className = "err mt-2";
+        msg.textContent = "Could not create: " + e.message;
+    } finally { $("e-avatar").disabled = false; }
+});
+
+// ── actions on an avatar task ──────────────────────────────────────────────
+$("a-cancel").addEventListener("click", async () => {
+    const sel = state.selected; if (!sel) return;
+    if (!confirm("Cancel this pending avatar task?")) return;
+    const r = await fetch(`${AVATAR_API}/task/${sel.id}`, { method: "DELETE" });
+    const j = await r.json();
+    if (j.code !== 0) { $("a-err").textContent = j.msg; return; }
+    state.selected = null; state.detailKey = null;
+    await refreshAll();
+});
+
+// ── existing avatars: datalist + overwrite warning ─────────────────────────
+async function loadAvatars() {
+    try {
+        const r = await fetch("/api/avatars");
+        const j = await r.json();
+        if (j.code !== 0) return;
+        state.avatars = j.data.avatars || [];
+        $("avatarIds").innerHTML = state.avatars
+            .map(a => `<option value="${esc(a)}"></option>`).join("");
+    } catch (e) { console.error("avatars", e); }
+}
+
+// ── boot ───────────────────────────────────────────────────────────────────
+(async function boot() {
+    await Promise.all([loadModels(), loadAvatars()]);
+    updateFormMode();
+    await refreshAll();
+    startPolling();
+})();
 </script>
-
 </body>
 </html>
