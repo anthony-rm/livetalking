@@ -1,0 +1,107 @@
+// Remote GPU worker protocol for LiveTalking (Option B).
+//
+// The Mac keeps running the full Flask/aiohttp server (TTS, ASR feature
+// extraction, paste-back, streaming). Only the heavy GPU stages move to a
+// Windows/NVIDIA box:
+//   * avatar inference  (MuseTalk UNet+VAE, Wav2Lip convnet)  -> InferBatch
+//   * base-video enhance (RVM matting + Real-ESRGAN + GFPGAN)  -> EnhanceVideo
+//
+// Tensors travel as (dtype, shape, raw little-endian bytes) so no pickle is
+// on the wire. Frames come back as a single stacked tensor per batch.
+
+syntax = "proto3";
+
+package livetalking.remote;
+
+service RemoteWorker {
+  // Liveness + which backend/avatar is currently resident.
+  rpc Health(Empty) returns (HealthReply);
+
+  // Load the heavy model weights for a backend on the worker GPU.
+  // backend: "musetalk" | "wav2lip"
+  rpc LoadModel(ModelSpec) returns (OpReply);
+
+  // Ship an avatar's inference artifacts (latents for musetalk, face crops
+  // for wav2lip) to the worker and make it resident. Idempotent per avatar_id.
+  rpc LoadAvatar(AvatarPayload) returns (OpReply);
+
+  // One inference batch. audiofeat is the per-frame audio feature list the
+  // Mac's ASR worker already produced; the worker returns the model's raw
+  // prediction frames (the Mac does paste_back locally).
+  rpc InferBatch(InferRequest) returns (InferReply);
+
+  // Drop resident avatar/model state (frees VRAM).
+  rpc Unload(Empty) returns (OpReply);
+
+  // Run the whole base-video enhance pipeline on the worker and return a zip
+  // with enhanced.mp4 + optional matte/ + person/ sidecars.
+  rpc EnhanceVideo(EnhanceRequest) returns (EnhanceReply);
+}
+
+message Empty {}
+
+message Tensor {
+  string dtype = 1;              // "uint8" | "float32" | "float16"
+  repeated int64 shape = 2;
+  bytes data = 3;                // raw bytes, C-order
+}
+
+message OpReply {
+  bool ok = 1;
+  string msg = 2;
+}
+
+message HealthReply {
+  bool ok = 1;
+  string device = 2;            // e.g. "cuda"
+  string backend = 3;           // resident backend, "" if none
+  string avatar_id = 4;         // resident avatar, "" if none
+  string detail = 5;
+}
+
+message ModelSpec {
+  string backend = 1;           // "musetalk" | "wav2lip"
+}
+
+message AvatarPayload {
+  string backend = 1;
+  string avatar_id = 2;
+  // One tensor per frame. musetalk: latents [1,8,32,32]; wav2lip: face crops
+  // [H,W,3] uint8. Ordering matches the local artifact order.
+  repeated Tensor frames = 3;
+}
+
+message InferRequest {
+  int64 index = 1;              // absolute frame index (mirror_index applied worker-side)
+  int32 batch_size = 2;
+  // One tensor per batch element: the audio feature chunk. musetalk: [50,384]
+  // uint8; wav2lip: [1,80,16] float32.
+  repeated Tensor audiofeat = 3;
+}
+
+message InferReply {
+  Tensor frames = 1;            // stacked pred frames [B,H,W,3]
+}
+
+message EnhanceRequest {
+  string filename = 1;          // source clip name (ext preserved)
+  bytes source = 2;             // raw source video bytes
+  int32 width = 3;
+  int32 height = 4;
+  string background = 5;        // "#RRGGBB" / "r,g,b"
+  string fit = 6;               // "contain" | "cover"
+  float strength = 7;           // 0..1
+  bool face_restore = 8;
+  int32 upscale = 9;            // 1 | 2 | 4
+  int32 max_frames = 10;        // 0 = all
+  bool want_matte = 11;         // include matte/ sidecar in the zip
+  bool want_person = 12;        // include person/ sidecar in the zip
+}
+
+message EnhanceReply {
+  bool ok = 1;
+  string msg = 2;
+  bytes archive = 3;            // zip: enhanced.mp4, [matte/], [person/], meta.json
+  int32 frames = 4;
+  double fps = 5;
+}
