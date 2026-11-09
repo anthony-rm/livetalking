@@ -7,8 +7,13 @@ Download them separately and place as described below.
 
 | File | Where it goes | Source |
 |------|---------------|--------|
-| `wav2lip256.pth` | `models/wav2lip.pth` (rename) | Quark: https://pan.quark.cn/s/83a750323ef0 |
-| `wav2lip256_avatar1.tar.gz` | extract to `data/avatars/wav2lip256_avatar1/` | Google Drive: https://drive.google.com/drive/folders/1FOC_MD6wdogyyX_7V1d4NDIO7P9NlSAJ |
+| `wav2lip256.pth` | `models/wav2lip.pth` (rename) | Wav2Lip checkpoint — see the note below |
+| `wav2lip256_avatar1.tar.gz` | extract to `data/avatars/wav2lip256_avatar1/` | Sample avatar bundle — see the note below |
+
+The two bundled Wav2Lip artifacts for this course project are distributed by the
+team out of band (shared drive / lab machine), so there is no public link here.
+Any `wav2lip256` checkpoint works: drop it at `models/wav2lip.pth` and extract an
+avatar bundle into `data/avatars/<avatar_id>/`.
 
 ```bash
 cd /path/to/livetalking

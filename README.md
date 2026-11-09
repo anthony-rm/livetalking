@@ -1,202 +1,165 @@
-<p align="center">
-    <img src="./assets/LiveTalking-logo.png" align="middle" width="600"/>
-</p>
+# LiveTalking — Group Project
 
-> **Course project.** This repository is a school group project built on the
-> open-source [LiveTalking](https://github.com/lipku/LiveTalking) engine
-> (Apache-2.0). It is an academic exercise, not a production deployment, and it
-> is not affiliated with or endorsed by the upstream project. The license and
-> attribution for the original work are retained in [LICENSE](./LICENSE).
->
-> Group additions live mainly in:
-> - `avatars/remote_avatar.py`, `remote/` — run inference on a remote GPU worker
-> - `tools/enhance/` — avatar base-video preprocessing
-> - `server/enhance_routes.py`, `docs/avatar-studio.md` — merged Avatar Studio page
-> - `app.py` — lazy model load/unload lifecycle
-> - Apple Silicon (MPS) support across the avatar backends
+A real-time streaming digital human: text or audio goes in, and a lip-synced
+virtual avatar answers on screen, over WebRTC, RTMP, or a virtual camera.
 
-<p align="center">
-    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202-dfd.svg"></a>
-    <a href="https://github.com/lipku/LiveTalking/releases"><img src="https://img.shields.io/github/v/release/lipku/LiveTalking?color=ffa"></a>
-    <a href=""><img src="https://img.shields.io/badge/python-3.10+-aff.svg"></a>
-    <a href=""><img src="https://img.shields.io/badge/os-linux%2C%20win%2C%20mac-pink.svg"></a>
-    <a href="https://github.com/lipku/LiveTalking/graphs/contributors"><img src="https://img.shields.io/github/contributors/lipku/LiveTalking?color=c4f042&style=flat-square"></a>
-</p>
-<p align="center">
-<a href="https://trendshift.io/repositories/12565" target="_blank"><img src="https://trendshift.io/api/badge/repositories/12565" alt="lipku%2FLiveTalking | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-</p>
+**This is a course project.** The repository is a school group project built on
+the open-source LiveTalking engine released under the Apache License 2.0. It is
+an academic exercise, not a production deployment, and it is not affiliated with
+or endorsed by the upstream project. The original license text and copyright
+notices are retained in [LICENSE](./LICENSE) and in the source file headers.
 
-A real-time interactive streaming digital human engine enabling synchronized audio-video conversation, widely adopted in commercial applications.
+## What our group built
 
-**Demos**: [wav2lip](https://youtu.be/-ss0H8qLr7E) | [ernerf](https://www.bilibili.com/video/BV1G1421z73r/) | [musetalk](https://youtu.be/vzUMruoZlxc/)
-
-Domestic Mirror: [Gitee](https://gitee.com/lipku/LiveTalking) | [GitCode](https://gitcode.com/lipku/LiveTalking)
-
-## ❤️Sponsor
-
-> [Want to appear here?](mailto:lipku@foxmail.com)
-
-<details open>
-<summary>Click to collapse</summary>
-<table>
-<tr>
-<td width="180"><a href="https://www.packyapi.ai/register?aff=4gqz"><img src="assets/partner/packycode.png" alt="PackyCode" width="150"></a></td>
-<td>Access leading AI models through PackyCode with one API endpoint and one API key. Enjoy fast, reliable access with automatic failover and dedicated high-speed routes for Codex and Claude Code.
-Get started with $1 in free credits, a discount on your first top-up, and savings of up to 80% on eligible routes. Sign up through the <a href="https://www.packyapi.ai/register?aff=4gqz">link</a></td>
-</tr>
-<tr>
-<td width="180"><a href="https://go.apimart.ai/tw-livetalking"><img src="assets/partner/apimart.png" alt="APIMart" width="150"></a></td>
-<td>APIMart is a low-cost API platform for AI image & video generation — GPT-Image-2 from $0.006/image, 160+ images per dollar. One async API covers both image and video: submit a task, get an ID, fetch results via polling or callback. Batch tens of thousands of images without timeouts, switch models without changing code. Pay-as-you-go with no monthly fee. Sign up <a href="https://go.apimart.ai/tw-livetalking">here</a> to get started.</td>
-</tr>
-</table>
-
-</details>
+| Area | Where | What |
+|------|-------|------|
+| Remote GPU worker | `remote/`, `avatars/remote_avatar.py` | Run avatar inference on a separate CUDA box over gRPC while the host keeps TTS, ASR features and streaming. See [docs/remote-gpu.md](docs/remote-gpu.md). |
+| Base-video preprocessing | `tools/enhance/`, `server/enhance_routes.py` | Matting (RVM), super-resolution, face restore (GFPGAN), 9:16 recomposition and background swap before avatar extraction. |
+| Avatar Studio | `web/avatar.html`, `docs/avatar-studio.md` | One page that either enhances only or enhances-then-generates an avatar, sharing one job list. |
+| Model lifecycle | `app.py`, `server/routes.py` | Lazy load on first connect, explicit unload and app restart, exposed as `/api/model/*` and in the admin console. |
+| Apple Silicon support | `avatars/` | MPS device routing across the avatar backends and their audio feature extractors. |
+| Single English UI | `web/` | The duplicated bilingual page set was collapsed into one English set. |
 
 ---
 
 ## Features
-1. Supports multiple digital human models: ernerf, musetalk, wav2lip, Ultralight-Digital-Human
-2. Supports voice cloning
-3. Supports interrupting the digital human while speaking
-4. Supports full-body video stitching
-5. Supports WebRTC, RTMP, and virtual camera output
-6. Supports action choreography: plays custom videos when not speaking
-7. Supports multi-concurrency
-8. Supports custom digital human avatars
-9. Provides frontend API integration
+
+1. Multiple avatar backends: wav2lip, musetalk, ultralight (plus `remote`, which
+   proxies to one of them over gRPC)
+2. Voice cloning
+3. Interrupting the avatar mid-sentence
+4. Full-body video stitching
+5. WebRTC, RTMP and virtual camera output
+6. Action choreography: plays custom video when not speaking
+7. Multi-concurrency
+8. Custom avatars generated from an uploaded base video
+9. Frontend API integration
 
 ---
 
 ## Usage Scenarios
 
-LiveTalking leverages real-time streaming digital human technology to drive virtual avatars via text or voice, combined with LLM for intelligent conversation. Suitable for the following scenarios:
-
 | Scenario | Description |
 |----------|-------------|
-| **Virtual Streamer / Live Commerce [LiveStream](https://github.com/lipku/livestream)** | 24/7 unmanned live streaming with LLM-generated sales scripts and action choreography for natural performance |
-| **AI Digital Human Customer Service** | Integrate enterprise knowledge bases for real-time voice Q&A with interruption support |
-| **Online Education / Training** | Digital teacher分身 for course recording, or API-driven digital instructor for real-time lectures |
-| **Intelligent Voice Assistant** | Pair with smart speakers or apps, calling the `/human` API to drive digital human voice interactions |
-| **Large Screen Presentation** | Digital human presenter for exhibition halls, event venues, and other content narration scenarios |
-| **Batch Short Video Creation** | Submit scripts in batch via API to generate digital human videos without real-person filming, using `/human` + `/record` APIs |
+| Virtual streamer / live commerce | Uninterrupted streaming with LLM-generated scripts and choreographed actions |
+| Digital human customer service | Knowledge-base-backed voice Q&A with interruption support |
+| Online education / training | Recorded course material, or an API-driven instructor for live lectures |
+| Voice assistant | Drive the `/human` endpoint from a speaker or app frontend |
+| Exhibition / kiosk presenter | A digital presenter for venue narration |
+| Batch short-video creation | Submit scripts through `/human` + `/record` instead of filming |
 
-**Core Flow**: User input (text/audio) → LLM response (optional) → TTS speech synthesis → Real-time lip-sync → Audio/video streaming output
+**Core flow**: input (text or audio) → LLM response (optional) → TTS synthesis →
+real-time lip-sync inference → audio/video stream out.
 
 ---
 
 ## 1. Installation
 
-Tested on Ubuntu 24.04, Python 3.12, PyTorch 2.9.1, CUDA 12.8.
+### 1.1 macOS / Apple Silicon
 
-### 1.1 Install Dependencies
+```bash
+git clone https://github.com/anthony-rm/livetalking.git
+cd livetalking
+./setup.sh          # creates the `livetalking` conda env and installs everything
+```
+
+`setup.sh` is idempotent. It installs a CPU/MPS torch build, the Python
+requirements, the `face_recognition` stack via the prebuilt `dlib-bin` wheel
+(compiling dlib from source takes several minutes), and runs
+`scripts/patch_basicsr.py`, which is required because basicsr 1.4.2 imports a
+module removed in torchvision 0.17+.
+
+### 1.2 Linux / CUDA
 
 ```bash
 git clone https://github.com/anthony-rm/livetalking.git
 cd livetalking
 conda create -n livetalking python=3.12
 conda activate livetalking
-# If CUDA version is not 12.8 (check via nvidia-smi), install the corresponding PyTorch version(https://pytorch.org/get-started/previous-versions)
+# Match the CUDA build to your driver (check with nvidia-smi).
 pip install torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
-# MuseTalk avatar generation needs face_recognition (dlib backend). Use the
-# prebuilt dlib-bin wheel and skip face-recognition's dlib dependency so pip
-# does not compile dlib from source.
+
+# MuseTalk avatar generation needs face_recognition (dlib backend). The
+# prebuilt dlib-bin wheel avoids compiling dlib from source.
 pip install dlib-bin face_recognition_models "setuptools<81"
 pip install --no-deps face-recognition
-# basicsr 1.4.2 imports torchvision's removed functional_tensor module; patch it
-# or realesrgan/gfpgan/basicsr all fail to import.
+
+# basicsr 1.4.2 imports torchvision's removed functional_tensor module.
 python scripts/patch_basicsr.py
 ```
 
-On macOS / Apple Silicon, `./setup.sh` does the above with a CPU/MPS torch build
-and a resolved conda prefix. Either way, `./run.sh` launches the server with the
-interpreter it pins; override it with `LT_PYTHON` if the env is not at
-`/opt/miniconda3/envs/livetalking/bin/python`.
-
-Installation FAQ: <https://doc.livetalking.ai/en/docs/faq/>
-
-Linux CUDA environment setup: <https://zhuanlan.zhihu.com/p/674972886>
+`./run.sh` launches the server with a pinned interpreter. If the conda env is
+not at `/opt/miniconda3/envs/livetalking/bin/python`, set `LT_PYTHON` (also
+honoured by `setup.sh` and the scripts in `scripts/`).
 
 ---
 
-## 2. Quick Start
+## 2. Running the Server
 
-### 2.1 Download Models
+### 2.1 Model weights
 
-| Source | Link |
-|--------|------|
-| Quark Cloud | <https://pan.quark.cn/s/83a750323ef0> |
-| Google Drive | <https://drive.google.com/drive/folders/1FOC_MD6wdogyyX_7V1d4NDIO7P9NlSAJ?usp=sharing> |
+Weights are not in this repository. See [MODELS.md](MODELS.md) for the checkpoint
+list, where each file goes, and how to fetch it.
 
-1. Copy `wav2lip256.pth` to the project's `models/` directory and rename it to `wav2lip.pth`
-2. Extract `wav2lip256_avatar1.tar.gz` and copy the entire extracted folder to `data/avatars/`
-
-### 2.2 Start the Server
+### 2.2 Start
 
 ```bash
-python app.py --transport webrtc --model wav2lip --avatar_id wav2lip256_avatar1
+./run.sh --transport webrtc --model wav2lip --avatar_id wav2lip256_avatar1
 ```
 
-> **Note**: The server must open ports TCP:8010, UDP:1-65536
+Weights load lazily on the first client connection, so startup is fast and the
+server runs without a model loaded until something connects.
 
-### 2.3 Client Access
+> The server needs TCP:8010 open, plus a UDP range for WebRTC media.
+> Change the port with `--listenport`, or in `config.yaml`.
 
-| Method | Description |
-|--------|-------------|
-| Browser | Open `http://serverip:8010/index.html`, click "Connect" to play the digital human video, then enter text and submit |
-| API | See [API Docs](docs/api.md) for HTTP-based integration |
-| Desktop App | Download: <https://pan.quark.cn/s/d7192d8ac19b> |
-
-### 2.4 Web Pages
+### 2.3 Web pages
 
 | Page | URL | Description |
 |------|-----|-------------|
-| Home | `/index.html` | WebRTC connection + text/audio driver + recording control |
-| Avatar Studio | `/avatar.html` | Preprocess a base video (matte, face restore, 9:16 canvas, background swap) and generate digital human avatars — optionally chaining the two steps |
-| Admin Console | `/admin.html` | Real-time session monitoring & global configuration |
+| Home | `/index.html` | WebRTC connect, text/audio driver, recording |
+| Avatar Studio | `/avatar.html` | Enhance a base video and/or generate an avatar from it |
+| Admin Console | `/admin.html` | Session monitoring, global config, model controls, remote-worker setup |
 
-<img src="./assets/index.jpg" align="middle"/>
+### 2.4 Client access
 
-### 2.5 Quick Experience
-
-1. Create an instance with a cloud image to run instantly: [UCloud Image](https://www.compshare.cn/images/4458094e-a43d-45fe-9b57-de79253befe4?referral_code=3XW3852OBmnD089hMMrtuU&ytag=GPU_GitHub_livetalking)  
-2. Windows Integrated Package <https://pan.quark.cn/s/a040bf5cb065>
-3. Commercial Version Demo URL <https://www.livetalking.top>
-
-### 2.6 Documentation
-<https://doc.livetalking.ai/en>
+| Method | Description |
+|--------|-------------|
+| Browser | Open `http://<host>:8010/index.html`, connect, then submit text |
+| API | See [docs/api.md](docs/api.md) |
 
 ---
 
 ## 3. Architecture
 
-### Dataflow Diagram
-
 <img src="./assets/dataflow.png" align="middle" />
 
-### Layer Overview
+**API layer** — `/human` takes text in echo (play directly) or chat (LLM) mode;
+`/humanaudio` takes an audio file. Each connection gets a `sessionid`, which is
+what makes concurrency work.
 
-**API Layer**
-- `/human`: Accepts text, supporting echo (direct playback) and chat (LLM conversation) modes
-- `/humanaudio`: Accepts audio files for direct playback
-- Each connection is assigned a unique `sessionid`, supporting multi-user concurrency
+**Logic layer** — LLM response, TTS synthesis, and synchronous acoustic feature
+extraction (mel / hubert / whisper).
 
-**Logic Layer**
-- **LLM Engine**: Integrates with models like Qwen to generate conversational responses 
-- **TTS Engine**: Modular design supporting EdgeTTS, GPT-SoVITS, CosyVoice, Tencent Cloud, and more
-- **Feature Extraction**: Synchronously extracts acoustic features (e.g., Mel spectrograms) for lip-sync inference
+**Rendering layer** — model inference produces lip-synced frames, which are
+pasted back into the full video frame rather than replacing it.
 
-**Rendering Layer**
-- **Model Inference**: Uses deep learning models (Wav2Lip, MuseTalk, etc.) to generate lip-sync frames from audio features
-- **Post-Processing**: Smoothly overlays the generated mouth region back onto the original high-definition video
+**Streaming layer** — WebRTC for low latency, RTMP for restreaming, virtual
+camera as a system device.
 
-**Streaming Layer**
-- **WebRTC**: Low-latency browser-based streaming
-- **RTMP**: Standard live streaming protocol, supports pushing to platforms like Bilibili/YouTube
-- **Virtual Camera**: Outputs as a system camera device
+**Plugin system** — [registry.py](registry.py) registers TTS, avatar and output
+modules by name, so a backend is chosen with `--model` / `--tts` rather than by
+editing the pipeline.
 
-**Plugin System**
-- Decentralized registration mechanism based on [registry.py](registry.py), allowing developers to extend TTS, Avatar, and Output modules
+### Two non-obvious constraints
+
+- **RVM is recurrent.** Matting cannot be computed per-frame independently; the
+  four hidden states must carry across frames, so `tools/enhance/matting.py` owns
+  a stateful runner and resets state per stream.
+- **Only crops cross the wire in remote mode.** `RemoteAvatar` ships the small
+  predicted face crops, never full frames; paste-back and all streaming stay
+  local. That is what makes the remote worker usable over a LAN.
 
 ---
 
@@ -204,91 +167,60 @@ python app.py --transport webrtc --model wav2lip --avatar_id wav2lip256_avatar1
 
 | Document | Description |
 |----------|-------------|
-| [docs/api.md](docs/api.md) | General API — WebRTC, text/audio driver, recording, action choreography |
-| [docs/avatar_api.md](docs/avatar_api.md) | Avatar Generation API — create tasks, query progress, delete tasks |
-| [docs/admin_api.md](docs/admin_api.md) | Admin API — global config, session monitoring, force stop |
+| [docs/api.md](docs/api.md) | WebRTC, text/audio driver, recording, action choreography |
+| [docs/avatar_api.md](docs/avatar_api.md) | Avatar generation: create task, query progress, delete |
+| [docs/admin_api.md](docs/admin_api.md) | Global config, session monitoring, force stop |
+| [docs/avatar-studio.md](docs/avatar-studio.md) | The merged Avatar Studio page and its enhance → avatar chain |
 
-### Additional docs
+Other project documents:
 
 | Document | Description |
 |----------|-------------|
-| [MODELS.md](MODELS.md) | Where every checkpoint goes and where to download it |
-| [docs/remote-gpu.md](docs/remote-gpu.md) | Run inference on a remote CUDA box over gRPC |
-| [docs/remote-gpu-pc-setup.md](docs/remote-gpu-pc-setup.md) | Step-by-step Windows/NVIDIA worker setup |
-| [tools/enhance/README.md](tools/enhance/README.md) | Base-video preprocessing (matte, restore, 9:16 recompose) |
+| [MODELS.md](MODELS.md) | Checkpoint inventory and placement |
+| [docs/remote-gpu.md](docs/remote-gpu.md) | Remote GPU worker over gRPC (admin UI + SSH setup) |
+| [tools/enhance/README.md](tools/enhance/README.md) | Base-video preprocessing pipeline |
 
 ---
 
 ## 5. Docker
 
-Available images:
-- **AutoDL**: [Image](https://www.codewithgpu.com/i/lipku/livetalking/base)  
-- **UCloud**: [Image](https://www.compshare.cn/images/4458094e-a43d-45fe-9b57-de79253befe4?referral_code=3XW3852OBmnD089hMMrtuU&ytag=GPU_GitHub_livetalking) — Supports opening any port  
-
+A [Dockerfile](./Dockerfile) is included; build it from the repository root. See
+[MODELS.md](MODELS.md) for where weights need to be mounted.
 
 ---
 
 ## 6. Performance
 
-- Each video stream compression consumes CPU; higher resolution means greater CPU usage. Each lip-sync inference consumes GPU
-- Concurrent sessions when not speaking depend on CPU; concurrent speaking sessions depend on GPU
-- In backend logs: `inferfps` = GPU inference frame rate, `finalfps` = final streaming frame rate. Both must be >= 25 for real-time performance
+Two numbers in the server log decide whether a session is live: `inferfps`
+(model inference) and `finalfps` (frames actually sent). Both must be ≥ 25.
 
-### Real-Time Inference Performance
-
-| Model | GPU | FPS |
-|:------|:----|:----|
-| wav2lip256 | RTX 3060 | 60 |
-| wav2lip256 | RTX 3080Ti | 120 |
-| musetalk | RTX 3080Ti | 42 |
-| musetalk | RTX 3090 | 45 |
-| musetalk | RTX 4090 | 72 |
-
-- wav2lip256: RTX 3060 or higher recommended
-- musetalk: RTX 3080Ti or higher recommended
+Stream compression costs CPU and inference costs GPU, so idle sessions scale with
+CPU and speaking sessions with GPU. Raise `batch_size` only while `inferfps`
+stays above the threshold — on an M2 Air in fp16 we measured `bs8=22.5 fps`,
+`bs16=17.7 fps`, `bs32=14.0 fps`, which is why the default is 8. Reproduce with
+`benchmark_batchsize.py`.
 
 ---
 
-## 7. Commercial
-|dimension|Open Source Version|Commercial Version|
-|---|---|---|
-|Positioning|Open Source Community Edition, Apache 2\.0|Commercial paid version, targeted at customers requiring high performance and operable delivery|
-|Core Objectives|Rapid prototyping, secondary development, and academic research|Out Of The Box commercial delivery: performance acceleration, Self\-Adaptation actions, real\-time interaction|
-|Tech Stack|Three models: wav2lip, musetalk and ultralight|Added wav2lip and a full set of enhancement capabilities based on the open\-source version| 
+## 7. Tests
 
-More detail <https://doc.livetalking.ai/en/docs/service/>  
-
----
-## 8. Statement
-
-Videos developed based on this project and published on platforms such as Bilibili, WeChat Channels, and Douyin must include the LiveTalking watermark and logo.
-
----
-
-## Citation
-
-If this repository helps your research or project, please cite our work.
-
-```
-@software{livetalking,
-  author = {Hengzhong Li},
-  title = {LiveTalking: Real-Time Interactive Streaming Digital Human Framework},
-  year = {2025},
-  publisher = {GitHub},
-  url = {https://github.com/lipku/livetalking}
-}
+```bash
+./run.sh --skip-model --listenport 8099        # in one shell
+python tests/smoke_test.py --port 8099          # 8 HTTP checks, no weights needed
 ```
 
+| Script | Covers |
+|--------|--------|
+| `tests/smoke_test.py` | HTTP surface from `docs/api.md`; works with `--skip-model` |
+| `tests/test_avatar_registry.py` | Avatar generator registry and parameter coercion |
+| `tests/test_enhance_pipeline.py` | Enhance geometry, compositing and matte math |
+| `tests/webrtc_smoke.py`, `tests/media_check.py` | Real WebRTC handshake and frame counting |
+| `tests/firefox_check.py`, `tests/firefox_mdns_pref.py` | Firefox mDNS candidate resolution |
+
 ---
 
+## 8. License
 
-| Community | Link |
-|-----------|------|
-| Knowledge Planet | <https://t.zsxq.com/7NMyO> |
-| WeChat | wxwubug  |
-| Telegram | <https://t.me/livetalking> |
-| Discord | <https://discord.gg/n5jSPCT3Uf> |
-| Email | lipku@foxmail.com |
-| WeChat Official | 数字人技术 |
-
-<img src="./assets/qrcode-wechat.jpg" align="middle" />
+Apache License 2.0 — see [LICENSE](./LICENSE). This repository contains code
+from the LiveTalking project; the original copyright headers are preserved in
+every file that carries one.
