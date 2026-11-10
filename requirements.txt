@@ -49,14 +49,21 @@ dashscope
 #gradio_client
 #azure-cognitiveservices-speech
 
-# --- Remote GPU worker (Option B: Mac host + Windows/NVIDIA compute) ---
+# --- Remote GPU worker (Option B: local host + remote CUDA box) ---
 # Serve avatar inference + the enhance pipeline on a remote CUDA box; see
 # docs/remote-gpu.md. grpcio-tools is only needed to regenerate stubs.
 grpcio
 grpcio-tools
-# Secure storage of the PC credentials entered in the admin console: the
-# password goes to the OS keychain (Keychain Access / Credential Manager),
-# never to a file in the repo. paramiko backs the real SSH login test.
+# grpcio does NOT bundle protobuf (it stopped around 1.8x). The generated
+# inference_pb2 imports google.protobuf directly, so without this the worker
+# dies with `No module named 'google'`. The stubs validate the runtime version
+# (see ValidateProtobufRuntimeVersion), so the major version is pinned by them:
+# regenerate the stubs and update this pin together.
+protobuf
+# Secure storage of the remote-host SSH credentials entered in the admin console:
+# the password goes to the OS keychain (Keychain Access on macOS, SecretService on
+# Linux, Credential Manager on Windows), never to a file in the repo. paramiko
+# backs the real SSH login test.
 keyring
 paramiko
 

@@ -5,46 +5,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin Console - LiveTalking</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="/theme.css">
     <style>
-        :root {
-            --primary-bg: #f0f4fc;
-            --card-bg: rgba(255, 255, 255, 0.85);
-            --text-dark: #1e293b;
-            --text-muted: #64748b;
-            --accent-primary: #4361ee;
-            --accent-secondary: #3f37c9;
-            --danger-color: #ef4444;
-            --success-color: #10b981;
-            --glass-border: rgba(255, 255, 255, 0.4);
-            --border-radius: 16px;
-        }
-
-        body {
-            font-family: 'Inter', system-ui, -apple-system, sans-serif;
-            background: linear-gradient(135deg, #e0eafc 0%, #cfdef3 100%);
-            color: var(--text-dark);
-            min-height: 100vh;
-            padding: 40px 20px;
-        }
-
-        .glass-card {
-            background: var(--card-bg);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid var(--glass-border);
-            border-radius: var(--border-radius);
-            box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.1);
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }
-
-        .glass-card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 15px 35px -10px rgba(67, 97, 238, 0.15);
-        }
-
         .header-title {
             font-weight: 700;
             color: var(--text-dark);
@@ -53,10 +17,7 @@
             align-items: center;
             gap: 12px;
         }
-
-        .header-title i {
-            color: var(--accent-primary);
-        }
+        .header-title i { color: var(--primary); }
 
         .config-table th {
             color: var(--text-muted);
@@ -76,7 +37,7 @@
         .session-card {
             padding: 20px;
             margin-bottom: 20px;
-            border-left: 5px solid var(--accent-primary);
+            border-left: 5px solid var(--primary);
         }
 
         .session-header {
@@ -91,7 +52,7 @@
         .session-id {
             font-size: 1.2rem;
             font-weight: 700;
-            color: var(--accent-primary);
+            color: var(--primary);
         }
 
         .badge-status {
@@ -104,7 +65,7 @@
 
         .badge-speaking {
             background-color: rgba(16, 185, 129, 0.1);
-            color: var(--success-color);
+            color: var(--success);
         }
 
         .badge-silent {
@@ -114,48 +75,24 @@
 
         .badge-recording {
             background-color: rgba(239, 68, 68, 0.1);
-            color: var(--danger-color);
+            color: var(--danger);
             animation: pulse 2s infinite;
         }
 
         @keyframes pulse {
-            0% {
-                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
-            }
-
-            70% {
-                box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
-            }
-
-            100% {
-                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
-            }
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+            70% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
         }
 
-        .session-detail-item {
-            margin-bottom: 8px;
-            font-size: 0.95rem;
-        }
+        .session-detail-item { margin-bottom: 8px; font-size: 0.95rem; }
+        .session-detail-item strong { color: var(--text-muted); font-weight: 500; margin-right: 8px; }
 
-        .session-detail-item strong {
-            color: var(--text-muted);
-            font-weight: 500;
-            margin-right: 8px;
-        }
-
-        .btn-stop {
-            background-color: var(--danger-color);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 8px 16px;
+        .field-label {
+            font-size: 0.8rem;
             font-weight: 600;
-            transition: all 0.2s ease;
-        }
-
-        .btn-stop:hover {
-            background-color: #dc2626;
-            transform: scale(1.05);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
         .skeleton {
@@ -167,13 +104,8 @@
         }
 
         @keyframes loading {
-            0% {
-                background-position: 200% 0;
-            }
-
-            100% {
-                background-position: -200% 0;
-            }
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
         }
 
         .empty-state {
@@ -192,6 +124,13 @@
 </head>
 
 <body>
+    <nav class="navbar navbar-dark navbar-themed mb-4">
+        <div class="container-fluid px-4">
+            <a class="navbar-brand" href="/index.html"><i class="bi bi-camera-video-fill me-2"></i>LiveTalking</a>
+            <span class="text-white-50 small d-none d-md-inline">Admin console — sessions, config and remote worker</span>
+        </div>
+    </nav>
+
     <div class="container">
         <h1 class="header-title">
             <i class="bi bi-speedometer2"></i> LiveTalking Console
@@ -234,7 +173,13 @@
                     <h4 class="mb-4 d-flex align-items-center gap-2">
                         <i class="bi bi-people-fill text-success"></i> Active Sessions
                         <span class="badge bg-primary ms-2 rounded-pill" id="sessionCount">0</span>
+                        <button class="btn btn-sm btn-outline-danger ms-auto" id="btnKillAll"
+                                onclick="killAllSessions()">
+                            <i class="bi bi-x-octagon"></i> Kill All
+                        </button>
                     </h4>
+
+                    <div id="sessionAlert"></div>
 
                     <div id="sessionsContainer">
                         <div class="session-card glass-card">
@@ -253,103 +198,80 @@
                 <div class="glass-card p-4">
                     <h4 class="mb-4 d-flex align-items-center gap-2">
                         <i class="bi bi-gpu-card text-info"></i> Remote GPU Worker
-                        <span class="badge-status badge-silent ms-auto" id="remoteSourceBadge">checking...</span>
+                        <span class="badge-status badge-silent ms-auto" id="remoteStateBadge">checking...</span>
                     </h4>
 
-                    <div class="row g-3 align-items-end">
-                        <div class="col-md-6">
-                            <label for="remoteAddress" class="form-label text-muted mb-1"
-                                   style="font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">
-                                Worker address (host:port)
-                            </label>
-                            <input type="text" class="form-control" id="remoteAddress"
-                                   placeholder="192.168.1.42:50051" autocomplete="off" spellcheck="false">
-                            <div class="form-text" id="remoteHelp">
-                                Where the NVIDIA worker listens. Leave empty to fall back to
-                                <code>--remote_worker</code> / <code>LT_REMOTE_WORKER</code>.
+                    <!-- Compute mode: one switch for every GPU task (avatar
+                         inference, avatar generation, video enhance). -->
+                    <div class="d-flex flex-wrap align-items-center gap-3 mb-3 pb-3"
+                         style="border-bottom: 1px solid rgba(0,0,0,.06);">
+                        <div>
+                            <div class="field-label text-muted mb-1">Where GPU work runs</div>
+                            <div class="btn-group" role="group" aria-label="Compute mode">
+                                <input type="radio" class="btn-check" name="workerMode"
+                                       id="modeLocal" value="local" autocomplete="off">
+                                <label class="btn btn-outline-primary btn-sm" for="modeLocal">
+                                    <i class="bi bi-laptop"></i> This machine
+                                </label>
+                                <input type="radio" class="btn-check" name="workerMode"
+                                       id="modeRemote" value="remote" autocomplete="off">
+                                <label class="btn btn-outline-primary btn-sm" for="modeRemote">
+                                    <i class="bi bi-gpu-card"></i> Remote GPU worker
+                                </label>
                             </div>
                         </div>
-                        <div class="col-md-6">
-                            <div class="d-flex flex-wrap gap-2">
-                                <button class="btn btn-outline-primary" id="btnRemoteTest" onclick="testRemote()">
-                                    <i class="bi bi-plug"></i> Test Connection
-                                </button>
-                                <button class="btn btn-primary" id="btnRemoteSave" onclick="saveRemote()">
-                                    <i class="bi bi-save"></i> Save
-                                </button>
-                                <button class="btn btn-outline-secondary" id="btnRemoteClear" onclick="clearRemote()">
-                                    <i class="bi bi-x-circle"></i> Clear
-                                </button>
-                            </div>
-                        </div>
+                        <div class="text-muted small ms-auto" id="workerModeHint"></div>
                     </div>
 
-                    <div id="remoteResult" class="mt-3"></div>
-
-                    <hr class="my-4">
-
-                    <h6 class="mb-3 d-flex align-items-center gap-2">
-                        <i class="bi bi-shield-lock text-success"></i> PC Credentials (SSH)
-                        <span class="badge-status badge-silent ms-2" id="credBadge">not saved</span>
-                    </h6>
-
+                    <div id="workerFields">
                     <div class="row g-3">
                         <div class="col-md-4">
-                            <label for="credUsername" class="form-label text-muted mb-1"
-                                   style="font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Username</label>
-                            <input type="text" class="form-control" id="credUsername"
-                                   placeholder="Administrator" autocomplete="username" spellcheck="false">
-                        </div>
-                        <div class="col-md-5">
-                            <label for="credHost" class="form-label text-muted mb-1"
-                                   style="font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Host / IP address</label>
-                            <input type="text" class="form-control" id="credHost"
+                            <label for="sshHost" class="form-label text-muted field-label mb-1">Host / IP</label>
+                            <input type="text" class="form-control" id="sshHost"
                                    placeholder="192.168.1.42" autocomplete="off" spellcheck="false">
                         </div>
                         <div class="col-md-3">
-                            <label for="credPort" class="form-label text-muted mb-1"
-                                   style="font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">SSH port</label>
-                            <input type="number" class="form-control" id="credPort" value="22" min="1" max="65535">
+                            <label for="sshUser" class="form-label text-muted field-label mb-1">Username</label>
+                            <input type="text" class="form-control" id="sshUser"
+                                   placeholder="ubuntu" autocomplete="username" spellcheck="false">
                         </div>
-                        <div class="col-md-9">
-                            <label for="credPassword" class="form-label text-muted mb-1"
-                                   style="font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Password</label>
-                            <input type="password" class="form-control" id="credPassword"
-                                   placeholder="stored in the OS keychain, never in a file" autocomplete="new-password">
+                        <div class="col-md-3">
+                            <label for="sshPassword" class="form-label text-muted field-label mb-1">Password</label>
+                            <input type="password" class="form-control" id="sshPassword"
+                                   placeholder="stored in the OS keychain" autocomplete="new-password">
                         </div>
-                        <div class="col-md-3 d-flex align-items-end">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="credTrustNew">
-                                <label class="form-check-label small" for="credTrustNew">Trust new host key</label>
-                            </div>
+                        <div class="col-md-2">
+                            <label for="sshPort" class="form-label text-muted field-label mb-1">SSH port</label>
+                            <input type="number" class="form-control" id="sshPort" value="22" min="1" max="65535">
                         </div>
                     </div>
 
                     <div class="d-flex flex-wrap gap-2 mt-3">
-                        <button class="btn btn-outline-primary" id="btnCredSave" onclick="saveCredentials()">
-                            <i class="bi bi-shield-check"></i> Save Credentials
+                        <button class="btn btn-primary" id="btnConnect" onclick="connectRemote()">
+                            <i class="bi bi-plug-fill"></i> Connect
                         </button>
-                        <button class="btn btn-outline-success" id="btnCredTest" onclick="testSsh()">
-                            <i class="bi bi-terminal"></i> Test SSH Login
+                        <button class="btn btn-outline-primary" id="btnTestSsh" onclick="testSsh()">
+                            <i class="bi bi-terminal"></i> Test
                         </button>
-                        <button class="btn btn-outline-secondary" id="btnCredClear" onclick="clearCredentials()">
-                            <i class="bi bi-trash"></i> Forget Credentials
+                        <button class="btn btn-outline-secondary" id="btnDisconnect" onclick="disconnectRemote()">
+                            <i class="bi bi-x-circle"></i> Disconnect
                         </button>
                     </div>
 
-                    <div id="credResult" class="mt-3"></div>
+                    <div id="remoteResult" class="mt-3"></div>
 
                     <small class="text-muted d-block mt-3">
-                        Password is written to the OS keychain (Keychain Access on macOS, Credential Manager
-                        on Windows) — never to <code>data/</code>, <code>.env</code>, or logs, and never sent back
-                        to this page. The host key is pinned on first successful login and any later change is
-                        rejected.
+                        <strong>Connect</strong> saves the login, proves it over SSH, opens the
+                        <code>ssh -L</code> forward to the worker and checks it. The password goes to the
+                        OS keychain — never to a file, a log, or back to this page. The host key is pinned
+                        on first login.
                     </small>
+                    </div>
 
-                    <small class="text-muted d-block mt-2">
-                        The address above is used by <code>--model remote</code> inference and by the video
-                        enhancer. A change applies on the next model load or enhance job — sessions already
-                        connected keep their worker.
+                    <small class="text-muted d-block mt-3" id="modeLocalNote" hidden>
+                        Everything runs on this machine — avatar inference, avatar generation and video
+                        enhance. Pick <strong>Remote GPU worker</strong> to send them to the CUDA box;
+                        the saved login and tunnel are kept, so switching back is instant.
                     </small>
                 </div>
             </div>
@@ -422,6 +344,7 @@
                 if (result.code === 0) {
                     renderSessions(result.data.sessions);
                     $('#sessionCount').text(result.data.sessions.length);
+                    $('#btnKillAll').prop('disabled', result.data.sessions.length === 0);
                 } else {
                     console.error('Failed to fetch sessions:', result.msg);
                 }
@@ -463,52 +386,69 @@
             }
 
             sessions.forEach(session => {
-                const statusBadge = session.speaking
-                    ? `<span class="badge-status badge-speaking"><i class="bi bi-mic-fill"></i> Speaking</span>`
-                    : `<span class="badge-status badge-silent"><i class="bi bi-mic-mute-fill"></i> Silent</span>`;
+                // A session still building has no tracks/config yet: it is a
+                // placeholder taking up a max_session slot while the model
+                // loads. Show that state instead of empty "undefined" fields.
+                const building = !!session.building;
 
-                const recBadge = session.recording
+                const statusBadge = building
+                    ? `<span class="badge-status badge-recording"><i class="bi bi-hourglass-split"></i> Loading model...</span>`
+                    : (session.speaking
+                        ? `<span class="badge-status badge-speaking"><i class="bi bi-mic-fill"></i> Speaking</span>`
+                        : `<span class="badge-status badge-silent"><i class="bi bi-mic-mute-fill"></i> Silent</span>`);
+
+                const recBadge = (!building && session.recording)
                     ? `<span class="badge-status badge-recording ms-2"><i class="bi bi-record-circle"></i> Recording</span>`
                     : '';
 
                 const customOptContent = session.customopt && session.customopt.length > 0
-                    ? `<pre class="mt-1 p-2 bg-light border rounded text-dark" style="font-size: 0.75rem; max-height: 120px; overflow-y: auto;">${JSON.stringify(session.customopt, null, 2)}</pre>`
+                    ? `<pre class="mt-1 p-2 bg-light border rounded text-dark" style="font-size: 0.75rem; max-height: 120px; overflow-y: auto;">${escapeHtml(JSON.stringify(session.customopt, null, 2))}</pre>`
                     : '<span class="text-muted">None</span>';
+
+                const details = building
+                    ? `<div class="text-muted" style="font-size: 0.9rem;">
+                           Waiting for the model to load — this session has no stream yet.
+                           Kill it to abandon the connect.
+                       </div>`
+                    : `<div class="row">
+                        <div class="col-md-6">
+                            <div class="session-detail-item">
+                                <strong>Avatar ID:</strong> ${escapeHtml(session.avatar_id)}
+                            </div>
+                            <div class="session-detail-item">
+                                <strong>Model:</strong> ${escapeHtml(session.model)}
+                            </div>
+
+                        </div>
+                        <div class="col-md-6">
+                            <div class="session-detail-item">
+                                <strong>Voice Ref:</strong> ${escapeHtml(session.REF_FILE)}
+                            </div>
+                            <div class="session-detail-item mt-2">
+                                <strong><i class="bi bi-sliders"></i> Custom Actions:</strong>
+                                ${customOptContent}
+                            </div>
+                        </div>
+                       </div>`;
 
                 container.append(`
                     <div class="session-card glass-card">
                         <div class="session-header">
                             <div>
-                                <span class="session-id">SID: ${session.sessionid}</span>
-                                <div class="mt-2 text-muted" style="font-size: 0.85rem;">Transport: ${session.transport || 'Default'}</div>
+                                <span class="session-id">SID: ${escapeHtml(session.sessionid)}</span>
+                                <div class="mt-2 text-muted" style="font-size: 0.85rem;">Transport: ${escapeHtml(session.transport || (building ? 'pending' : 'Default'))}</div>
                             </div>
-                            <div>
+                            <div class="d-flex align-items-center gap-2">
                                 ${statusBadge}
                                 ${recBadge}
-
+                                <button class="btn btn-sm btn-outline-danger btn-kill-session"
+                                        data-sessionid="${escapeHtml(session.sessionid)}"
+                                        title="Disconnect this session">
+                                    <i class="bi bi-x-octagon"></i> Kill
+                                </button>
                             </div>
                         </div>
-                        <div class="row">
-                            <div class="col-md-6">
-                                <div class="session-detail-item">
-                                    <strong>Avatar ID:</strong> ${session.avatar_id}
-                                </div>
-                                <div class="session-detail-item">
-                                    <strong>Model:</strong> ${session.model}
-                                </div>
-
-                            </div>
-                            <div class="col-md-6">
-                                <div class="session-detail-item">
-                                    <strong>Voice Ref:</strong> ${session.REF_FILE}
-                                </div>
-                                <div class="session-detail-item mt-2">
-                                    <strong><i class="bi bi-sliders"></i> Custom Actions:</strong>
-                                    ${customOptContent}
-                                </div>
-                            </div>
-                        </div>
-
+                        ${details}
                     </div>
                 `);
             });
@@ -521,6 +461,63 @@
             Promise.all([fetchConfig(), fetchSessions()]).finally(() => {
                 setTimeout(() => icon.removeClass('spin'), 500);
             });
+        }
+
+        // ─── Session kill ─────────────────────────────────────────────────
+        // The session id is attacker-influenced (WHEP accepts a client-chosen
+        // `sessionid`), so it is read from a data attribute and encoded with
+        // encodeURIComponent — never interpolated into an inline onclick.
+        async function killSession(sessionid, label) {
+            if (!confirm(`Kill session ${label}? The client is disconnected and its render threads stop.`)) {
+                return null;
+            }
+            try {
+                const resp = await fetch(`/api/admin/sessions/${encodeURIComponent(sessionid)}/kill`, {
+                    method: 'POST'
+                });
+                const result = await resp.json();
+                if (result.code !== 0) {
+                    showSessionAlert(`Kill failed: ${result.msg}`, 'danger');
+                    return null;
+                }
+                showSessionAlert(`Session ${label} killed.`, 'success');
+                return result.data;
+            } catch (err) {
+                showSessionAlert(`Network error: ${err}`, 'danger');
+                return null;
+            } finally {
+                fetchSessions();
+                fetchModelStatus();
+            }
+        }
+
+        async function killAllSessions() {
+            if (!confirm('Kill every active session? All connected clients will be disconnected.')) return;
+            try {
+                const resp = await fetch('/api/admin/sessions/kill-all', { method: 'POST' });
+                const result = await resp.json();
+                if (result.code !== 0) {
+                    showSessionAlert(`Kill all failed: ${result.msg}`, 'danger');
+                    return;
+                }
+                const n = (result.data.killed || []).length;
+                showSessionAlert(n ? `Killed ${n} session${n === 1 ? '' : 's'}.` : 'No active sessions.',
+                                 n ? 'success' : 'secondary');
+            } catch (err) {
+                showSessionAlert(`Network error: ${err}`, 'danger');
+            } finally {
+                fetchSessions();
+                fetchModelStatus();
+            }
+        }
+
+        // Inline feedback under the session list — an alert() per session would
+        // be a modal storm when several are killed in a row.
+        function showSessionAlert(msg, cls) {
+            const host = $('#sessionAlert');
+            host.html(`<div class="alert alert-${cls} py-2 mb-3">${escapeHtml(msg)}</div>`);
+            clearTimeout(showSessionAlert._t);
+            showSessionAlert._t = setTimeout(() => host.empty(), 6000);
         }
 
         $('<style> .spin { animation: rotation 1s linear infinite; } @keyframes rotation { from { transform: rotate(0deg); } to { transform: rotate(359deg); } } </style>').appendTo('head');
@@ -579,18 +576,6 @@
         }
 
         // ─── Remote GPU worker ────────────────────────────────────────────
-        const sourceLabels = {
-            'admin-ui': ['Saved here', 'badge-speaking'],
-            'cli/env': ['From CLI / env', 'badge-recording'],
-            'unset':   ['Not configured', 'badge-silent']
-        };
-
-        function renderRemoteSource(source) {
-            const [label, cls] = sourceLabels[source] || [source, 'badge-silent'];
-            $('#remoteSourceBadge').text(label)
-                .removeClass('badge-silent badge-speaking badge-recording').addClass(cls);
-        }
-
         function showRemoteResult(html, cls) {
             $('#remoteResult').html(`<div class="alert ${cls} mb-0 py-2">${html}</div>`);
         }
@@ -599,182 +584,207 @@
             return $('<div>').text(s == null ? '' : String(s)).html();
         }
 
+        // One badge for the whole section: connected means "the SSH forward is up
+        // and the worker answered"; there is nothing else to configure by hand.
+        function renderRemoteBadge(t, credentials, mode) {
+            const badge = $('#remoteStateBadge');
+            badge.removeClass('badge-silent badge-speaking badge-recording');
+            if (mode && mode !== 'remote') {
+                badge.text('Local mode').addClass('badge-silent');
+            } else if (!t || t.enabled === false) {
+                badge.text('Direct address').addClass('badge-recording');
+            } else if (t.suspended) {
+                badge.text('Disconnected').addClass('badge-silent');
+            } else if (t.running || t.listening) {
+                badge.text('Connected').addClass('badge-speaking');
+            } else if (credentials && credentials.complete) {
+                badge.text('Not connected').addClass('badge-recording');
+            } else {
+                badge.text('Not configured').addClass('badge-silent');
+            }
+        }
+
+        function renderSteps(d) {
+            const names = {
+                'ssh-login': 'SSH login',
+                'authorize-key': 'Authorize this host\'s key',
+                'key-login': 'Key-based login',
+                'tunnel': 'SSH tunnel',
+                'worker': 'Worker health'
+            };
+            const rows = (d.steps || []).map(s => `
+                <div class="small">
+                    <i class="bi ${s.ok ? 'bi-check-circle text-success' : 'bi-x-octagon text-danger'}"></i>
+                    <strong>${escapeHtml(names[s.name] || s.name)}</strong>
+                    ${s.detail ? `<span class="text-muted">— ${escapeHtml(s.detail)}</span>` : ''}
+                </div>`).join('');
+            let gpu = '';
+            if (d.ok) {
+                gpu = `<div class="mt-2 small">`
+                    + `<i class="bi bi-gpu-card"></i> <strong>${escapeHtml(d.device || '?')}</strong>`
+                    + (d.gpu ? ` — ${escapeHtml(d.gpu)}` : '')
+                    + ` at <code>${escapeHtml(d.address || '')}</code>`
+                    + (d.busy ? ' · <strong>busy</strong>' : '') + `</div>`;
+                if (!d.revision) {
+                    gpu += `<div class="mt-1 small text-warning"><i class="bi bi-question-circle"></i> `
+                        + `Worker reports no revision (old build). Run <code>./deploy.sh</code>.</div>`;
+                } else if (!d.revision_match) {
+                    gpu += `<div class="mt-1 small text-danger"><i class="bi bi-arrow-repeat"></i> `
+                        + `Revision drift: box <code>${escapeHtml(d.revision)}</code> vs host `
+                        + `<code>${escapeHtml(d.host_revision || '?')}</code>. Run <code>./deploy.sh</code>.</div>`;
+                }
+            }
+            return rows + gpu;
+        }
+
         async function fetchRemoteStatus() {
             try {
                 const result = await (await fetch('/api/remote/status')).json();
                 if (result.code !== 0) return;
-                const { address, source, saved, env, credentials } = result.data;
-                renderRemoteSource(source);
-                applyCredentials(credentials);
-                // Show the SAVED value in the box (what you'd edit), not the
-                // effective one — otherwise typing nothing then saving would
-                // silently promote the env value into a saved override.
-                $('#remoteAddress').val(saved || '');
-                let help = 'Where the NVIDIA worker listens.';
-                if (env && source === 'cli/env') {
-                    help += ` Currently inherited from CLI/env: <code>${escapeHtml(env)}</code>.`;
-                } else if (env && saved) {
-                    help += ` Overriding CLI/env value <code>${escapeHtml(env)}</code>.`;
-                } else if (!address) {
-                    help += ' Leave empty to fall back to <code>--remote_worker</code> / <code>LT_REMOTE_WORKER</code>.';
-                }
-                $('#remoteHelp').html(help);
+                const { credentials, tunnel: t, mode, address } = result.data;
+                renderRemoteBadge(t, credentials, mode);
+                renderWorkerMode(mode, address);
+                if (credentials && credentials.username) $('#sshUser').val(credentials.username);
+                if (credentials && credentials.host) $('#sshHost').val(credentials.host);
+                if (t && t.ssh_port) $('#sshPort').val(t.ssh_port);
             } catch (err) {
                 console.error('Failed to fetch remote status', err);
             }
         }
 
-        async function testRemote() {
-            const address = $('#remoteAddress').val().trim();
-            const btn = $('#btnRemoteTest');
-            btn.prop('disabled', true);
-            showRemoteResult('<i class="bi bi-hourglass-split"></i> Probing worker...', 'alert-secondary');
-            try {
-                const resp = await fetch('/api/remote/test', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ address })
-                });
-                const result = await resp.json();
-                if (result.code !== 0) {
-                    showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(result.msg)}`, 'alert-danger');
-                    return;
-                }
-                const d = result.data;
-                if (!d.reachable) {
-                    showRemoteResult(
-                        `<i class="bi bi-x-octagon"></i> <strong>Unreachable</strong> at <code>${escapeHtml(d.address)}</code>`
-                        + `<div class="mt-1 small">${escapeHtml(d.error || '')}</div>`
-                        + `<div class="mt-1 small text-muted">Check the worker is running, the port, and the PC firewall rule (TCP 50051).</div>`,
-                        'alert-danger');
-                    return;
-                }
-                const gpuLine = d.cuda
-                    ? `<i class="bi bi-check-circle"></i> <strong>CUDA worker</strong>`
-                    : `<i class="bi bi-exclamation-triangle"></i> <strong>Reachable, but not CUDA</strong>`;
-                const detail = d.gpu ? ` — ${escapeHtml(d.gpu)}` : '';
-                const resident = [d.backend, d.avatar_id].filter(Boolean).map(escapeHtml).join(' / ');
-                showRemoteResult(
-                    `${gpuLine} at <code>${escapeHtml(d.address)}</code>${detail}`
-                    + `<div class="mt-1 small">Device: <code>${escapeHtml(d.device || '?')}</code>`
-                    + (resident ? ` · Resident: <code>${resident}</code>` : ' · Nothing loaded yet')
-                    + `</div>`
-                    + (!d.cuda ? `<div class="mt-1 small text-muted">torch.cuda.is_available() is false on the worker — reinstall the CUDA wheel there (docs/remote-gpu-pc-setup.md stage 3).</div>` : ''),
-                    d.cuda ? 'alert-success' : 'alert-warning');
-            } catch (err) {
-                showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(err)}`, 'alert-danger');
-            } finally {
-                btn.prop('disabled', false);
-            }
-        }
+        // ─── compute mode toggle ─────────────────────────────────────────
+        // Every GPU task (inference, avatar generation, enhance) follows this
+        // one switch. It is persisted server-side and read per dispatch, so it
+        // applies to the next connect / task without a restart.
+        //
+        // The last server-confirmed mode is tracked here rather than read back
+        // from the radio: the browser flips `checked` BEFORE the change handler
+        // runs, so comparing against the DOM would always say "unchanged".
+        let appliedWorkerMode = null;
 
-        async function saveRemote() {
-            const address = $('#remoteAddress').val().trim();
-            if (address && !confirm(`Save worker address "${address}"?`)) return;
-            try {
-                const resp = await fetch('/api/remote/save', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ address })
-                });
-                const result = await resp.json();
-                if (result.code !== 0) {
-                    showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(result.msg)}`, 'alert-danger');
-                    return;
-                }
-                const d = result.data;
-                showRemoteResult(
-                    d.address
-                        ? `<i class="bi bi-check-circle"></i> Saved <code>${escapeHtml(d.address)}</code>.`
-                        : '<i class="bi bi-check-circle"></i> Cleared — falling back to CLI / env.',
-                    'alert-success');
-                fetchRemoteStatus();
-            } catch (err) {
-                showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(err)}`, 'alert-danger');
-            }
-        }
-
-        async function clearRemote() {
-            if (!confirm('Clear the saved worker address and fall back to --remote_worker / LT_REMOTE_WORKER?')) return;
-            $('#remoteAddress').val('');
-            await saveRemote();
-        }
-
-        // ─── PC credentials (SSH) ─────────────────────────────────────────
-        function renderCredBadge(c) {
-            const badge = $('#credBadge');
-            if (!c || (!c.username && !c.host)) {
-                badge.text('not saved').removeClass('badge-speaking badge-recording')
-                     .addClass('badge-silent');
-            } else if (c.complete) {
-                badge.text(`${c.username}@${c.host} · password in keychain`)
-                     .removeClass('badge-silent badge-recording').addClass('badge-speaking');
+        function renderWorkerMode(mode, address) {
+            const local = mode !== 'remote';
+            appliedWorkerMode = local ? 'local' : 'remote';
+            $('#modeLocal').prop('checked', local);
+            $('#modeRemote').prop('checked', !local);
+            // The host/login fields only matter in remote mode.
+            $('#workerFields').toggle(!local);
+            $('#modeLocalNote').prop('hidden', !local);
+            const hint = $('#workerModeHint');
+            if (local) {
+                hint.html('<i class="bi bi-cpu"></i> local — all GPU work on this machine');
+            } else if (!address) {
+                hint.html('<i class="bi bi-exclamation-triangle text-warning"></i> '
+                          + 'remote — no worker address yet; sessions will fail until you Connect');
             } else {
-                badge.text('incomplete — password missing')
-                     .removeClass('badge-silent badge-speaking').addClass('badge-recording');
+                hint.html('<i class="bi bi-check-circle text-success"></i> remote — '
+                          + escapeHtml(address));
             }
         }
 
-        function showCredResult(html, cls) {
-            $('#credResult').html(`<div class="alert ${cls} mb-0 py-2">${html}</div>`);
-        }
-
-        function applyCredentials(c) {
-            if (!c) return;
-            // Password is never returned by the API, so the field stays empty.
-            if (c.username) $('#credUsername').val(c.username);
-            if (c.host) $('#credHost').val(c.host);
-            renderCredBadge(c);
-        }
-
-        async function saveCredentials() {
-            const username = $('#credUsername').val().trim();
-            const host = $('#credHost').val().trim();
-            const password = $('#credPassword').val();
-            if (!username || !host || !password) {
-                showCredResult('<i class="bi bi-x-octagon"></i> username, host and password are all required.', 'alert-warning');
+        async function setWorkerMode(mode) {
+            if (mode === appliedWorkerMode) return;
+            const previous = appliedWorkerMode || 'local';
+            if (mode === 'remote' && !confirm(
+                    'Send all GPU work (avatar inference, avatar generation, video enhance) '
+                    + 'to the remote CUDA box?')) {
+                $('#modeLocal').prop('checked', previous === 'local');
+                $('#modeRemote').prop('checked', previous === 'remote');
                 return;
             }
-            const btn = $('#btnCredSave');
-            btn.prop('disabled', true);
             try {
-                const resp = await fetch('/api/remote/credentials', {
+                const resp = await fetch('/api/remote/mode', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, host, password })
+                    body: JSON.stringify({ mode })
                 });
                 const result = await resp.json();
                 if (result.code !== 0) {
-                    showCredResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(result.msg)}`, 'alert-danger');
+                    showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(result.msg)}`,
+                                     'alert-danger');
+                    await fetchRemoteStatus();
                     return;
                 }
-                $('#credPassword').val('');   // don't keep it in the DOM
-                applyCredentials(result.data.credentials);
-                showCredResult('<i class="bi bi-check-circle"></i> Credentials saved — password stored in the OS keychain.', 'alert-success');
+                const d = result.data;
+                let msg = d.mode === 'local'
+                    ? '<i class="bi bi-cpu"></i> GPU work now runs <strong>on this machine</strong>.'
+                    : '<i class="bi bi-gpu-card"></i> GPU work now runs on the '
+                      + '<strong>remote worker</strong>'
+                      + (d.address ? ` at <code>${escapeHtml(d.address)}</code>` : '')
+                      + (d.address ? '.' : ' — connect it below, or sessions will fail.');
+                if (d.reload_required) {
+                    // One message, not two: the second showRemoteResult would
+                    // replace the first and lose the mode confirmation.
+                    msg += `<div class="mt-2 text-warning"><i class="bi bi-exclamation-triangle"></i> `
+                         + `Mode saved, but <code>${escapeHtml(d.resident_backend || 'a model')}</code> `
+                         + `is still loaded. Unload the model (Model &amp; System Control) so the `
+                         + `next connect loads it in the new mode.</div>`;
+                }
+                showRemoteResult(msg, d.mode === 'local' ? 'alert-secondary' : 'alert-success');
+                await fetchRemoteStatus();
+                await fetchModelStatus();
             } catch (err) {
-                showCredResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(err)}`, 'alert-danger');
+                showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(err)}`, 'alert-danger');
+                // The server mode did not change; put the radios back and let
+                // the status endpoint re-render the hint.
+                $('#modeLocal').prop('checked', previous === 'local');
+                $('#modeRemote').prop('checked', previous === 'remote');
+                await fetchRemoteStatus();
+            }
+        }
+
+        function remoteForm() {
+            return {
+                host: $('#sshHost').val().trim(),
+                username: $('#sshUser').val().trim(),
+                password: $('#sshPassword').val(),
+                port: parseInt($('#sshPort').val() || '22', 10)
+            };
+        }
+
+        async function connectRemote() {
+            const form = remoteForm();
+            if (!form.host || !form.username) {
+                showRemoteResult('<i class="bi bi-x-octagon"></i> host and username are required.', 'alert-warning');
+                return;
+            }
+            const btn = $('#btnConnect');
+            btn.prop('disabled', true);
+            showRemoteResult('<i class="bi bi-hourglass-split"></i> Connecting over SSH...', 'alert-secondary');
+            try {
+                const resp = await fetch('/api/remote/connect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(form)
+                });
+                const result = await resp.json();
+                if (result.code !== 0) {
+                    showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(result.msg)}`, 'alert-danger');
+                    return;
+                }
+                const d = result.data;
+                $('#sshPassword').val('');   // never keep it in the DOM
+                showRemoteResult(renderSteps(d), d.ok ? 'alert-success' : 'alert-warning');
+                await fetchRemoteStatus();
+            } catch (err) {
+                showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(err)}`, 'alert-danger');
             } finally {
                 btn.prop('disabled', false);
             }
         }
 
         async function testSsh() {
-            const host = $('#credHost').val().trim();
-            if (!host) {
-                showCredResult('<i class="bi bi-x-octagon"></i> enter a host first.', 'alert-warning');
+            const form = remoteForm();
+            if (!form.host) {
+                showRemoteResult('<i class="bi bi-x-octagon"></i> enter a host first.', 'alert-warning');
                 return;
             }
-            const btn = $('#btnCredTest');
+            const btn = $('#btnTestSsh');
             btn.prop('disabled', true);
-            showCredResult('<i class="bi bi-hourglass-split"></i> Attempting SSH login...', 'alert-secondary');
+            showRemoteResult('<i class="bi bi-hourglass-split"></i> Attempting SSH login...', 'alert-secondary');
             try {
-                const body = {
-                    host,
-                    port: parseInt($('#credPort').val() || '22', 10),
-                    trust_new: $('#credTrustNew').is(':checked')
-                };
-                const typedPw = $('#credPassword').val();
-                if (typedPw) body.password = typedPw;   // otherwise the server uses the keychain
+                const body = { host: form.host, username: form.username, port: form.port };
+                if (form.password) body.password = form.password;   // else the keychain
                 const resp = await fetch('/api/remote/ssh-test', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -782,50 +792,59 @@
                 });
                 const result = await resp.json();
                 if (result.code !== 0) {
-                    showCredResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(result.msg)}`, 'alert-danger');
+                    showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(result.msg)}`, 'alert-danger');
                     return;
                 }
                 const d = result.data;
                 if (d.ok) {
                     const fp = d.fingerprint ? d.fingerprint.substring(0, 16) + '...' : '?';
-                    showCredResult(
-                        `<i class="bi bi-check-circle"></i> <strong>Login OK</strong> — ${escapeHtml(d.hostname || host)}`
-                        + `<div class="mt-1 small">host key pinned: <code>${escapeHtml(fp)}</code>`
-                        + (d.new_host_key ? ' · <span class="text-warning">new key trusted on first contact</span>' : '')
-                        + `</div>`,
+                    showRemoteResult(
+                        `<i class="bi bi-check-circle"></i> <strong>Login OK</strong> — ${escapeHtml(d.hostname || form.host)}`
+                        + `<div class="mt-1 small text-muted">host key ${escapeHtml(fp)}</div>`,
                         'alert-success');
                 } else if (d.needs_trust) {
-                    showCredResult(
+                    showRemoteResult(
                         `<i class="bi bi-shield-exclamation"></i> <strong>Host key not trusted</strong>`
                         + `<div class="mt-1 small">${escapeHtml(d.message)}</div>`
-                        + `<div class="mt-1 small text-muted">Tick "Trust new host key" and retry if this is the first connection to this PC.</div>`,
+                        + `<div class="mt-1 small text-muted">Press Connect to trust and pin it.</div>`,
                         'alert-warning');
                 } else {
-                    showCredResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(d.message || 'failed')}`, 'alert-danger');
+                    showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(d.message || 'failed')}`, 'alert-danger');
                 }
             } catch (err) {
-                showCredResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(err)}`, 'alert-danger');
+                showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(err)}`, 'alert-danger');
             } finally {
                 btn.prop('disabled', false);
             }
         }
 
-        async function clearCredentials() {
-            if (!confirm('Forget the stored username, host and keychain password?')) return;
+        async function disconnectRemote() {
+            const btn = $('#btnDisconnect');
+            btn.prop('disabled', true);
             try {
-                const resp = await fetch('/api/remote/credentials/clear', { method: 'POST' });
+                const resp = await fetch('/api/remote/disconnect', { method: 'POST' });
                 const result = await resp.json();
                 if (result.code !== 0) {
-                    showCredResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(result.msg)}`, 'alert-danger');
+                    showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(result.msg)}`, 'alert-danger');
                     return;
                 }
-                $('#credUsername').val('');
-                $('#credHost').val('');
-                $('#credPassword').val('');
-                renderCredBadge(result.data.credentials);
-                showCredResult('<i class="bi bi-check-circle"></i> Credentials forgotten (keychain entry deleted).', 'alert-success');
+                const t = result.data.tunnel || {};
+                // This process can only close a forward it spawned itself. One
+                // started by a terminal or by a previous server run keeps the port.
+                const external = t.listening && !t.running;
+                showRemoteResult(
+                    external
+                        ? '<i class="bi bi-exclamation-triangle"></i> Stopped forwarding, but something outside '
+                          + 'this server still listens on <code>' + escapeHtml(t.address || '50051') + '</code> '
+                          + '— a hand-started <code>ssh -L</code>, or a forward left over from an earlier run. '
+                          + 'Close it there if you want the worker unreachable.'
+                        : '<i class="bi bi-plug"></i> SSH tunnel closed. The saved login is kept — press Connect to reopen it.',
+                    external ? 'alert-warning' : 'alert-secondary');
+                await fetchRemoteStatus();
             } catch (err) {
-                showCredResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(err)}`, 'alert-danger');
+                showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(err)}`, 'alert-danger');
+            } finally {
+                btn.prop('disabled', false);
             }
         }
 
@@ -835,8 +854,25 @@
             fetchModelStatus();
             fetchRemoteStatus();
 
+            // Delegated: the session cards are re-rendered every 5 s, so a
+            // per-card handler bound at render time would be re-bound forever.
+            $('#sessionsContainer').on('click', '.btn-kill-session', function () {
+                const sid = $(this).attr('data-sessionid');
+                const btn = $(this);
+                btn.prop('disabled', true);
+                killSession(sid, sid).finally(() => btn.prop('disabled', false));
+            });
+
+            // Mode toggle: one switch for avatar inference, avatar generation
+            // and video enhance. Saved server-side; the server reads it per
+            // dispatch, so it applies to the next connect / task.
+            $('input[name="workerMode"]').on('change', function () {
+                setWorkerMode(this.value);
+            });
+
             setInterval(fetchSessions, 5000);
             setInterval(fetchModelStatus, 5000);
+            setInterval(fetchRemoteStatus, 10000);
         });
     </script>
 </body>

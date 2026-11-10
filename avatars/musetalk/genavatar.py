@@ -166,7 +166,12 @@ def generate_avatar(video_path, avatar_id, save_path='./data/avatars', bbox_shif
 
     with open(coords_path, 'wb') as f:
         pickle.dump(coord_list, f)
-    torch.save(input_latent_list, os.path.join(latents_out_path))
+    # latents.pt is a PORTABLE artifact: it must not bake in the device that
+    # happened to generate it. Saving CUDA-tagged tensors makes the avatar
+    # unloadable on a CPU/MPS host ("Attempting to deserialize object on a CUDA
+    # device but torch.cuda.is_available() is False"), and a MPS-tagged one
+    # breaks on a Linux box. Store on CPU and let the loader map to a device.
+    torch.save([l.detach().cpu() for l in input_latent_list], latents_out_path)
 
     if progress_callback: progress_callback(100)
     print("Avatar 生成完成！")

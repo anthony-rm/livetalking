@@ -1,11 +1,12 @@
 """Remote dispatch for the base-video enhance pipeline.
 
-When ``LT_REMOTE_WORKER`` is set (or ``--remote_worker`` was passed), enhance
-jobs run on the Windows/NVIDIA worker instead of locally: the Mac uploads the
-source clip, the worker runs the full ``tools.enhance`` pipeline (RVM matting +
-Real-ESRGAN + GFPGAN) on CUDA, and a zip with the enhanced mp4 + matte/person
-sidecars comes back into the job's workdir. The existing job status/serving
-routes work unchanged.
+When the local/remote toggle is set to ``remote`` (admin console, or
+``LT_WORKER_MODE=remote``) AND a worker address resolves, enhance jobs run on
+the remote GPU worker instead of locally: the host uploads the source clip, the
+worker runs the full ``tools.enhance`` pipeline (RVM matting + Real-ESRGAN +
+GFPGAN) on CUDA, and a zip with the enhanced mp4 + matte/person sidecars comes
+back into the job's workdir. The existing job status/serving routes work
+unchanged.
 """
 from __future__ import annotations
 
@@ -25,7 +26,14 @@ def remote_address() -> Optional[str]:
 
 
 def remote_enabled() -> bool:
-    return remote_address() is not None
+    """True when enhance jobs should run on the worker.
+
+    Follows the admin console's local/remote toggle (remote/settings.py), not
+    the mere presence of an address: a box that is merely configured must not
+    pull work off this machine. Both the toggle and an address are required.
+    """
+    from remote.settings import remote_active
+    return remote_active()
 
 
 def enhance_video_remote(job, params: dict, output_path: str,

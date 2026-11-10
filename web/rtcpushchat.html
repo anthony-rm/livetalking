@@ -4,73 +4,59 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>LiveTalking</title>
-  <style>
-    button {
-      padding: 8px 16px;
-    }
-
-    video {
-      width: 100%;
-    }
-
-    .option {
-      margin-bottom: 8px;
-    }
-
-    #media {
-      max-width: 1280px;
-    }
-  </style>
+  <title>LiveTalking - WebRTC Push (Chat)</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+  <link rel="stylesheet" href="/theme.css">
 </head>
 
 <body>
 
-  <div class="option">
-    <input id="use-stun" type="checkbox" />
-    <label for="use-stun">Use STUN server</label>
+<nav class="navbar navbar-dark navbar-themed">
+  <div class="container-fluid px-4">
+    <a class="navbar-brand" href="/index.html"><i class="bi bi-camera-video-fill me-2"></i>LiveTalking</a>
+    <span class="text-white-50 small d-none d-md-inline">WebRTC (WHEP) playback &amp; chat driver</span>
   </div>
-  <button class="btn btn-primary" id="btn_play">Start</button>
-  <form class="form-inline" id="echo-form">
-    <div class="form-group">
-      <p>Input text</p>
+</nav>
 
-      <textarea cols="2" rows="3" style="width:600px;height:50px;" class="form-control" id="message">test</textarea>
+<div class="container mt-4">
+  <div class="row g-4">
+    <div class="col-lg-7">
+      <div class="glass-card">
+        <div class="card-header">
+          <i class="bi bi-broadcast"></i> Media
+          <button class="btn-primary-custom btn-sm ms-auto" id="btn_play"><i class="bi bi-play-fill"></i> Start</button>
+        </div>
+        <div class="card-body">
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" id="use-stun" />
+            <label class="form-check-label small" for="use-stun">Use STUN server</label>
+          </div>
+          <video id="rtc_media_player" class="w-100" controls autoplay></video>
+        </div>
+      </div>
     </div>
-    <button type="submit" class="btn btn-default">Send</button>
-  </form>
 
-  <div id="media">
-    <h2>Media</h2>
-
-    <video id="rtc_media_player" style="width:600px;" controls autoplay></video>
+    <div class="col-lg-5">
+      <div class="glass-card">
+        <div class="card-header"><i class="bi bi-chat-text-fill"></i> Chat Driver (POST /human)</div>
+        <div class="card-body">
+          <form id="echo-form">
+            <label class="form-label">Input text</label>
+            <textarea class="form-control form-control-sm mb-3" rows="3" id="message">test</textarea>
+            <button type="submit" class="btn-primary-custom"><i class="bi bi-send"></i> Send</button>
+          </form>
+        </div>
+      </div>
+    </div>
   </div>
+</div>
 
-  <script src="srs.sdk.js"></script>
-  <script type="text/javascript" src="http://cdn.sockjs.org/sockjs-0.3.4.js"></script>
-  <script type="text/javascript" src="https://code.jquery.com/jquery-2.1.1.min.js"></script>
-</body>
+<script src="srs.sdk.js"></script>
+<script type="text/javascript" src="https://code.jquery.com/jquery-2.1.1.min.js"></script>
 <script type="text/javascript" charset="utf-8">
 
   $(document).ready(function () {
-    // var host = window.location.hostname
-    // var ws = new WebSocket("ws://"+host+":8000/humanecho");
-    // //document.getElementsByTagName("video")[0].setAttribute("src", aa["video"]);
-    // ws.onopen = function() {
-    // console.log('Connected');
-    // };
-    // ws.onmessage = function(e) {
-    // console.log('Received: ' + e.data);
-    // data = e
-    // var vid = JSON.parse(data.data); 
-    // console.log(typeof(vid),vid)
-    // //document.getElementsByTagName("video")[0].setAttribute("src", vid["video"]);
-
-    // };
-    // ws.onclose = function(e) {
-    // console.log('Closed');
-    // };
-
     $('#echo-form').on('submit', function (e) {
       e.preventDefault();
       var message = $('#message').val();
@@ -86,7 +72,6 @@
         },
         method: 'POST'
       });
-      //ws.send(message);
       $('#message').val('');
     });
   });
@@ -102,18 +87,13 @@
       }
       sdk = new SrsRtcWhipWhepAsync();
 
-      // User should set the stream when publish is done, @see https://webrtc.org/getting-started/media-devices
-      // However SRS SDK provides a consist API like https://webrtc.org/getting-started/remote-streams
       $('#rtc_media_player').prop('srcObject', sdk.stream);
-      // Optional callback, SDK will add track to stream.
-      // sdk.ontrack = function (event) { console.log('Got track', event); sdk.stream.addTrack(event.track); };
 
       var host = window.location.hostname
       // For example: webrtc://r.ossrs.net/live/livestream
       var url = "http://" + host + ":1985/rtc/v1/whep/?app=live&stream=livestream"
       sdk.play(url).then(function (session) {
-        //$('#sessionid').html(session.sessionid);
-        //$('#simulator-drop').attr('href', session.simulator + '?drop=1&username=' + session.sessionid);
+        // WHEP session established
       }).catch(function (reason) {
         sdk.close();
         $('#rtc_media_player').hide();
@@ -122,18 +102,9 @@
     };
 
     $('#rtc_media_player').hide();
-    // var query = parse_query_string();
-    // srs_init_whep("#txt_url", query);
-
     $("#btn_play").click(startPlay);
-    // Never play util windows loaded @see https://github.com/ossrs/srs/issues/2732
-    // if (query.autostart === 'true') {
-    //     $('#rtc_media_player').prop('muted', true);
-    //     console.warn('For autostart, we should mute it, see https://www.jianshu.com/p/c3c6944eed5a ' +
-    //         'or https://developers.google.com/web/updates/2017/09/autoplay-policy-changes#audiovideo_elements');
-    //     window.addEventListener("load", function(){ startPlay(); });
-    // }
   });
 </script>
 
+</body>
 </html>

@@ -3,77 +3,72 @@
 <head>
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>LiveTalking</title>
-    <style>
-    button {
-        padding: 8px 16px;
-    }
-
-    video {
-        width: 100%;
-    }
-
-    .option {
-        margin-bottom: 8px;
-    }
-
-    #media {
-        max-width: 1280px;
-    }
-    </style>
+    <title>LiveTalking - WebRTC (Echo)</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="/theme.css">
 </head>
 <body>
 
-<div class="option">
-    <input id="use-stun" type="checkbox"/>
-    <label for="use-stun">Use STUN server</label>
-</div>
-<button id="start" onclick="start()">Start</button>
-<button id="stop" style="display: none" onclick="stop()">Stop</button>
-<button class="btn btn-primary" id="btn_start_record">Start Recording</button>
-<button class="btn btn-primary" id="btn_stop_record" disabled>Stop Recording</button>
-<!-- <button class="btn btn-primary" id="btn_download">Download Video</button> -->
-<input type="hidden" id="sessionid" value="0">
-<form class="form-inline" id="echo-form">
-    <div class="form-group">
-      <p>Input text</p>
-
-      <textarea cols="2" rows="3" style="width:600px;height:50px;" class="form-control" id="message">test</textarea>
+<nav class="navbar navbar-dark navbar-themed">
+    <div class="container-fluid px-4">
+        <a class="navbar-brand" href="/index.html"><i class="bi bi-camera-video-fill me-2"></i>LiveTalking</a>
+        <span class="text-white-50 small d-none d-md-inline">WebRTC playback, echo driver and recording</span>
     </div>
-    <button type="submit" class="btn btn-default">Send</button>
-  </form>
+</nav>
 
-<div id="media">
-    <h2>Media</h2>
+<div class="container mt-4">
+    <div class="row g-4">
+        <div class="col-lg-7">
+            <div class="glass-card">
+                <div class="card-header">
+                    <i class="bi bi-broadcast"></i> Media
+                    <div class="d-flex gap-2 ms-auto">
+                        <button class="btn-primary-custom btn-sm" id="start" onclick="start()"><i class="bi bi-play-fill"></i> Start</button>
+                        <button class="btn-danger-custom btn-sm" id="stop" style="display: none" onclick="stop()"><i class="bi bi-stop-fill"></i> Stop</button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="use-stun"/>
+                        <label class="form-check-label small" for="use-stun">Use STUN server</label>
+                    </div>
+                    <audio id="audio" autoplay="true"></audio>
+                    <video id="video" class="w-100" autoplay="true" playsinline="true"></video>
+                    <input type="hidden" id="sessionid" value="0">
+                </div>
+            </div>
 
-    <audio id="audio" autoplay="true"></audio>
-    <video id="video" style="width:600px;" autoplay="true" playsinline="true"></video>
+            <div class="glass-card">
+                <div class="card-header"><i class="bi bi-record-circle"></i> Recording (POST /record)</div>
+                <div class="card-body">
+                    <div class="d-flex gap-2">
+                        <button class="btn-primary-custom btn-sm" id="btn_start_record"><i class="bi bi-record-circle"></i> Start Recording</button>
+                        <button class="btn-outline-custom btn-sm" id="btn_stop_record" disabled><i class="bi bi-stop-circle"></i> Stop Recording</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-5">
+            <div class="glass-card">
+                <div class="card-header"><i class="bi bi-chat-text-fill"></i> Echo Driver (POST /human)</div>
+                <div class="card-body">
+                    <form class="form-inline" id="echo-form">
+                        <label class="form-label">Input text</label>
+                        <textarea cols="2" rows="3" class="form-control form-control-sm mb-3" id="message">test</textarea>
+                        <button type="submit" class="btn-primary-custom"><i class="bi bi-send"></i> Send</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script src="client.js"></script>
-<!-- <script type="text/javascript" src="http://cdn.sockjs.org/sockjs-0.3.4.js"></script> -->
 <script type="text/javascript" src="https://code.jquery.com/jquery-2.1.1.min.js"></script>
-</body>
 <script type="text/javascript" charset="utf-8">
-
 	$(document).ready(function() {
-	  // var host = window.location.hostname
-	  // var ws = new WebSocket("ws://"+host+":8000/humanecho");
-	  // //document.getElementsByTagName("video")[0].setAttribute("src", aa["video"]);
-	  // ws.onopen = function() {
-		// console.log('Connected');
-	  // };
-	  // ws.onmessage = function(e) {
-		// console.log('Received: ' + e.data);
-		// data = e
-		// var vid = JSON.parse(data.data); 
-		// console.log(typeof(vid),vid)
-		// //document.getElementsByTagName("video")[0].setAttribute("src", vid["video"]);
-		
-	  // };
-	  // ws.onclose = function(e) {
-		// console.log('Closed');
-	  // };
 
 	  $('#echo-form').on('submit', function(e) {
       e.preventDefault();
@@ -92,12 +87,10 @@
             },
             method: 'POST'
       });
-      //ws.send(message);
       $('#message').val('');
 	  });
 
     $('#btn_start_record').click(function() {
-        // Start recording
         console.log('Starting recording...');
         fetch('/record', {
             body: JSON.stringify({
@@ -113,7 +106,6 @@
                 console.log('Recording started.');
                 $('#btn_start_record').prop('disabled', true);
                 $('#btn_stop_record').prop('disabled', false);
-                // $('#btn_download').prop('disabled', true);
             } else {
                 console.error('Failed to start recording.');
             }
@@ -123,7 +115,6 @@
     });
 
     $('#btn_stop_record').click(function() {
-        // Stop recording
         console.log('Stopping recording...');
         fetch('/record', {
             body: JSON.stringify({
@@ -139,7 +130,6 @@
                 console.log('Recording stopped.');
                 $('#btn_start_record').prop('disabled', false);
                 $('#btn_stop_record').prop('disabled', true);
-                // $('#btn_download').prop('disabled', false);
             } else {
                 console.error('Failed to stop recording.');
             }
@@ -148,39 +138,7 @@
         });
     });
 
-    // $('#btn_download').click(function() {
-    //     // Download the video file
-    //     console.log('Downloading video...');
-    //     fetch('/record_lasted.mp4', {
-    //         method: 'GET'
-    //     }).then(function(response) {
-    //         if (response.ok) {
-    //             return response.blob();
-    //         } else {
-    //             throw new Error('Failed to download the video.');
-    //         }
-    //     }).then(function(blob) {
-    //         // Create a Blob object
-    //         const url = window.URL.createObjectURL(blob);
-    //         // Create a hidden download link
-    //         const a = document.createElement('a');
-    //         a.style.display = 'none';
-    //         a.href = url;
-    //         a.download = 'record_lasted.mp4';
-    //         document.body.appendChild(a);
-    //         // Trigger download
-    //         a.click();
-    //         // Clean up
-    //         window.URL.revokeObjectURL(url);
-    //         document.body.removeChild(a);
-    //         console.log('Video downloaded successfully.');
-    //     }).catch(function(error) {
-    //         console.error('Error:', error);
-    //     });
-    // });
-
 	});
-
-  
 </script>
+</body>
 </html>

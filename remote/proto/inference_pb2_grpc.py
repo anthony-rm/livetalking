@@ -64,6 +64,11 @@ class RemoteWorkerStub:
                 request_serializer=inference__pb2.EnhanceRequest.SerializeToString,
                 response_deserializer=inference__pb2.EnhanceReply.FromString,
                 _registered_method=True)
+        self.GenerateAvatar = channel.unary_unary(
+                '/livetalking.remote.RemoteWorker/GenerateAvatar',
+                request_serializer=inference__pb2.GenerateAvatarRequest.SerializeToString,
+                response_deserializer=inference__pb2.GenerateAvatarReply.FromString,
+                _registered_method=True)
 
 
 class RemoteWorkerServicer:
@@ -94,8 +99,8 @@ class RemoteWorkerServicer:
 
     def InferBatch(self, request, context):
         """One inference batch. audiofeat is the per-frame audio feature list the
-        Mac's ASR worker already produced; the worker returns the model's raw
-        prediction frames (the Mac does paste_back locally).
+        host's ASR worker already produced; the worker returns the model's raw
+        prediction frames (the host does paste_back locally).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -111,6 +116,17 @@ class RemoteWorkerServicer:
     def EnhanceVideo(self, request, context):
         """Run the whole base-video enhance pipeline on the worker and return a zip
         with enhanced.mp4 + optional matte/ + person/ sidecars.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GenerateAvatar(self, request, context):
+        """Build an avatar from a source clip ON THE WORKER'S GPU and return the
+        artifacts as a zip. This is the creation counterpart of InferBatch: the
+        host keeps the source clip and the finished artifact, the box does the
+        heavy per-frame VAE/parse work. The zip layout mirrors what
+        avatars/<backend>/genavatar.py writes into data/avatars/<id>/.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -148,6 +164,11 @@ def add_RemoteWorkerServicer_to_server(servicer, server):
                     servicer.EnhanceVideo,
                     request_deserializer=inference__pb2.EnhanceRequest.FromString,
                     response_serializer=inference__pb2.EnhanceReply.SerializeToString,
+            ),
+            'GenerateAvatar': grpc.unary_unary_rpc_method_handler(
+                    servicer.GenerateAvatar,
+                    request_deserializer=inference__pb2.GenerateAvatarRequest.FromString,
+                    response_serializer=inference__pb2.GenerateAvatarReply.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -312,6 +333,33 @@ class RemoteWorker:
             '/livetalking.remote.RemoteWorker/EnhanceVideo',
             inference__pb2.EnhanceRequest.SerializeToString,
             inference__pb2.EnhanceReply.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GenerateAvatar(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/livetalking.remote.RemoteWorker/GenerateAvatar',
+            inference__pb2.GenerateAvatarRequest.SerializeToString,
+            inference__pb2.GenerateAvatarReply.FromString,
             options,
             channel_credentials,
             insecure,

@@ -19,6 +19,7 @@
 #
 
 import math
+import collections
 from numpy.typing import NDArray
 import torch
 import numpy as np
@@ -88,6 +89,15 @@ class BaseAvatar:
         # applying backpressure to the inference producer.
         self.res_frame_queue = Queue(self.batch_size*4)
         self.render_event = Event()
+        # Audio is pushed to the track on its OWN 50 Hz clock, not in lockstep
+        # with video frames: the audio track paces by wall clock and stalls in
+        # 5ms increments when its queue runs dry, which produces audible
+        # micro-gaps whenever inference cannot keep up with 25 fps. A dedicated
+        # pacing thread keeps it fed at exactly 50 chunks/sec -- real audio when
+        # available, silence otherwise -- so the stream stays continuous.
+        # Each item is (int16 chunk, userdata) so eventpoints (start/end of a
+        # spoken sentence) still reach the track in the order they were emitted.
+        self.audio_out_queue = Queue(maxsize=200)  # ~4 s of 20 ms chunks
 
         _tts_modules = {
             'edgetts': 'tts.edge',
@@ -326,24 +336,85 @@ class BaseAvatar:
             return len(self.frame_list_cycle)
         return 1
         
+    def _pipeline(self):
+        """The optional batch pipeline (see remote.client.PipelinedInfer).
+
+        Present only for backends whose inference is a network round-trip, where
+        overlapping two batches recovers the link idle time. Backends that
+        compute locally return None and keep the original synchronous path.
+        """
+        return getattr(self, "infer_pipeline", None)
+
+    def _submit_batch(self, index, audiofeat_batch, quality=None):
+        """Start one inference batch; return a token for _resolve_batch()."""
+        pipeline = self._pipeline()
+        if pipeline is None:
+            return self.inference_batch(index, audiofeat_batch)
+        # The pipeline forwards only these keys to RemoteClient._build_request,
+        # so the wire format is decided in ONE place (the client), not here.
+        return pipeline.submit(index, self.batch_size, audiofeat_batch,
+                               encoding="jpeg-bgr", quality=quality or 75,
+                               feature_dtype="float16")
+
+    def _resolve_batch(self, token):
+        """Block for the frames of a batch started by _submit_batch()."""
+        pipeline = self._pipeline()
+        if pipeline is None:
+            return token
+        return pipeline.result(token)
+
     def inference(self, quit_event):
         length = self.get_avatar_length()
         index = 0
         count = 0
         counttime = 0
         last_speaking = False
+        # With a pipeline we keep ONE batch in flight while emitting the
+        # previous one (see below); without one, everything is emitted at once.
+        keep_in_flight = 1 if self._pipeline() is not None else 0
+        pending = collections.deque()   # (index0, audio_frames, token, silent)
 
-        # syncnet_T = 12  # 时间步
-        # weight_dtype = torch.float16  # 数据类型
-        # infernum = 0
+        def emit(item):
+            """Resolve one batch and push its frames in order.
+
+            A token of None means "no inference happened" (silence, or a batch
+            that failed to submit): those frames render from the static avatar
+            image, which is what the old inline loop did for both cases.
+            Returns (frames, elapsed_seconds) so the caller can log fps without
+            timing the same batch twice.
+            """
+            index0, audio_frames, token, silent = item
+            pred = None
+            elapsed = 0.0
+            if not silent and token is not None:
+                t0 = time.perf_counter()
+                try:
+                    pred = self._resolve_batch(token)
+                except Exception:
+                    logger.exception("inference_batch failed; skipping batch")
+                    pred = None
+                elapsed = time.perf_counter() - t0
+            for i in range(self.batch_size):
+                res_frame = None
+                if pred is not None and i < len(pred):
+                    res_frame = pred[i]
+                self.res_frame_queue.put(
+                    (res_frame, audio_frames[i*2:i*2+2],
+                     mirror_index(length, index0 + i)))
+            return pred, elapsed
+
         logger.info('start inference')
         while not quit_event.is_set():
             try:
-                starttime = time.perf_counter()
                 audiofeat_batch = []
                 try:
                     audiofeat_batch = self.asr.feat_queue.get(block=True, timeout=1)
                 except queue.Empty:
+                    # Nothing to submit, but a batch may still be in flight: drain
+                    # everything but the one we want to keep overlapping, so
+                    # frames keep flowing and shutdown cannot strand them.
+                    while len(pending) > keep_in_flight:
+                        emit(pending.popleft())
                     continue
 
                 is_all_silence = True
@@ -369,17 +440,13 @@ class BaseAvatar:
                 current_speaking = not is_all_silence
 
                 if is_all_silence: #全为静音数据，只需要取fullimg，不需要推理
-                    for i in range(self.batch_size):
-                        idx = mirror_index(length, index)
-                        self.res_frame_queue.put((None, audio_frames[i*2:i*2+2], idx))
-                        index = index + 1
+                    pending.append((index, audio_frames, None, True))
+                    index = index + self.batch_size
                 else:
                     if current_speaking and not last_speaking and self.custom_index.get(1) is not None: #从静音到说话切换,并且有自定义静态视频
                         index = 0
-                    t = time.perf_counter()
-
                     try:
-                        pred = self.inference_batch(index, audiofeat_batch)
+                        token = self._submit_batch(index, audiofeat_batch)
                     except Exception:
                         # A crash here (bad crop, shape mismatch, MPS op) used to
                         # kill the inference thread silently; with no producer the
@@ -387,18 +454,23 @@ class BaseAvatar:
                         # silence batch so the pipeline stays alive, and keep going
                         # instead of dying.
                         logger.exception("inference_batch failed; skipping batch")
-                        pred = [None] * self.batch_size
+                        token = None
+                    pending.append((index, audio_frames, token, False))
+                    index = index + self.batch_size
 
-                    counttime += (time.perf_counter() - t)
-                    count += self.batch_size
-                    if count >= 100:
-                        logger.info(f"------actual avg infer fps:{count/counttime:.4f}")
-                        count = 0
-                        counttime = 0
-                    for i, res_frame in enumerate(pred):
-                        self.res_frame_queue.put((res_frame, audio_frames[i*2:i*2+2], mirror_index(length, index)))
-                        index = index + 1
-                
+                # Emit in order, holding at most `keep_in_flight` batches back.
+                # THIS is where pipelining happens: the next RPC was already
+                # submitted above, so its transfer overlaps this batch's compute.
+                while len(pending) > keep_in_flight:
+                    _, elapsed = emit(pending.popleft())
+                    if elapsed > 0:
+                        counttime += elapsed
+                        count += self.batch_size
+                        if count >= 100:
+                            logger.info(f"------actual avg infer fps:{count/counttime:.4f}")
+                            count = 0
+                            counttime = 0
+
                 if current_speaking != last_speaking:
                     logger.info(f"inference 状态切换：{'说话' if last_speaking else '静音'} → {'说话' if current_speaking else '静音'}")
                     last_speaking = current_speaking
@@ -412,7 +484,42 @@ class BaseAvatar:
                 if hasattr(self, 'quit_event'):
                     self.quit_event.set()
                 break
+
+        # Drain whatever is still held back, so a shutdown does not strand the
+        # last batch's frames (and so process_frames sees them in order).
+        while pending:
+            try:
+                emit(pending.popleft())
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to emit the final batch during shutdown")
         logger.info('baseavatar inference thread stop')
+
+    def _pace_audio(self, quit_event):
+        """Feed the audio track at exactly 50 chunks/sec from a wall-clock timer.
+
+        The audio track's own recv() paces by wall clock and blocks in 5 ms
+        increments when its queue is empty, so this thread is what keeps it
+        continuous. Real audio chunks arrive from process_frames; when the
+        queue is empty we push silence so the track never starves. That silence
+        is a real 320-sample zero chunk, not a dropped frame, so the browser's
+        jitter buffer sees a steady stream and does not stretch or conceal.
+        """
+        chunk = np.zeros(self.asr.chunk, dtype=np.int16)
+        userdata = None
+        period = 1.0 / 50.0
+        next_tick = time.perf_counter()
+        while not quit_event.is_set():
+            try:
+                chunk, userdata = self.audio_out_queue.get(block=True, timeout=0.01)
+            except queue.Empty:
+                pass
+            self.output.push_audio_frame(chunk, userdata)
+            next_tick += period
+            now = time.perf_counter()
+            wait = next_tick - now
+            if wait > 0:
+                time.sleep(wait)
+        logger.info('baseavatar audio pacing thread stop')
 
     def process_frames(self,quit_event):
         enable_transition = False  # 设置为False禁用过渡效果，True启用
@@ -488,11 +595,12 @@ class BaseAvatar:
                 self.record_video_data(combine_frame)
 
                 for audio_frame in audio_frames:
-                    #frame,type,eventpoint = audio_frame
+                    # Enqueue for the audio pacing thread, which feeds the track
+                    # at 50 Hz on its own clock. Pushing directly here made audio
+                    # advance in lockstep with video frames (2 chunks per frame),
+                    # so at 21 fps the track got 42 chunks/sec and stalled.
                     frame = (audio_frame.data * 32767).astype(np.int16)
-
-                    # 使用统一输出接口推送音频帧
-                    self.output.push_audio_frame(frame, audio_frame.userdata)
+                    self.audio_out_queue.put((frame, audio_frame.userdata))
                     self.record_audio_data(frame)
                     
                 # if self.opt.transport == 'virtualcam' and hasattr(self.output, '_cam') and self.output._cam:
@@ -531,6 +639,10 @@ class BaseAvatar:
         process_thread = Thread(target=self.process_frames, args=(process_quit_event,), daemon=True)
         process_thread.start()
 
+        audio_quit_event = Event()
+        audio_thread = Thread(target=self._pace_audio, args=(audio_quit_event,), daemon=True)
+        audio_thread.start()
+
         count=0
         totaltime=0
         _starttime=time.perf_counter()
@@ -552,7 +664,9 @@ class BaseAvatar:
 
         # Shut down in dependency order: ASR worker first (stops producing
         # features), then inference (consumes features / produces frames), then
-        # process (consumes frames / pushes to output).
+        # process (consumes frames and fills the audio queue), and finally the
+        # audio pacing thread, which drains that queue. Reversing any of these
+        # joins a thread on a queue that will never be refilled.
         asr_quit_event.set()
         asr_thread.join(timeout=10)
 
@@ -561,4 +675,7 @@ class BaseAvatar:
 
         process_quit_event.set()
         process_thread.join(timeout=10)
+
+        audio_quit_event.set()
+        audio_thread.join(timeout=10)
 

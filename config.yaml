@@ -9,8 +9,19 @@ m: 8
 r: 10
 
 # -------- Avatar Model ----------------------------------------------------------
-model: wav2lip                 # musetalk / wav2lip / ultralight
-avatar_id: wav2lip256_avatar1
+# Default is fully LOCAL: GPU work (avatar inference + enhance) runs on this
+# machine. Flip the toggle in /admin.html (or set `worker_mode: remote` here /
+# LT_WORKER_MODE=remote) to send it to the remote CUDA box described in
+# docs/remote-gpu.md. The UI value wins over this file, and over the CLI.
+# `model` is the default backend for local mode; the avatar's own artifacts
+# still decide which backend actually loads.
+worker_mode: local               # local / remote  — where ALL GPU work runs
+model: musetalk
+remote_backend: musetalk         # backend the WORKER runs when worker_mode=remote (musetalk / wav2lip)
+remote_worker: 10.130.105.203:50051   # worker gRPC address. A value saved in
+                              # /admin.html wins over this one; so does
+                              # LT_REMOTE_WORKER in the environment.
+avatar_id: anthony007
 # benchmark_batchsize.py (M2 Air, fp16): bs8=22.5fps  bs16=17.7fps  bs32=14.0fps
 batch_size: 8
 

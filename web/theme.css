@@ -1,0 +1,146 @@
+/* LiveTalking shared theme — mirrors the look of /index.html.
+   Every page links this file; keep page-specific rules in the page. */
+
+:root {
+    --primary: #4361ee;
+    --primary-dark: #3f37c9;
+    --bg: #f0f4fc;
+    --card-bg: rgba(255,255,255,0.85);
+    --radius: 14px;
+    --danger: #ef4444;
+    --success: #10b981;
+    --warning: #f59e0b;
+    --text-dark: #1e293b;
+    --text-muted: #64748b;
+}
+
+body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background: linear-gradient(135deg, #e0eafc 0%, #cfdef3 100%);
+    background-attachment: fixed;
+    color: var(--text-dark);
+    min-height: 100vh;
+    padding-bottom: 40px;
+}
+
+/* ── Navbar ─────────────────────────────────────────────── */
+.navbar-brand { font-weight: 700; }
+a.navbar-brand,
+.navbar-dark a.navbar-brand {
+    color: #fff;
+    text-decoration: none;
+}
+a.navbar-brand:hover,
+.navbar-dark a.navbar-brand:hover { color: #fff; opacity: .85; }
+.navbar-themed {
+    background: linear-gradient(135deg, #4361ee, #3f37c9);
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+
+/* ── Cards ──────────────────────────────────────────────── */
+.glass-card {
+    background: var(--card-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.4);
+    border-radius: var(--radius);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.06);
+    margin-bottom: 20px;
+}
+.card-header {
+    background: transparent;
+    border-bottom: 1px solid rgba(0,0,0,0.06);
+    padding: 16px 20px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-dark);
+}
+.card-header i { color: var(--primary); }
+.card-body { padding: 20px; }
+
+/* ── Buttons ────────────────────────────────────────────── */
+.btn-primary-custom {
+    background: linear-gradient(135deg, #4361ee, #3f37c9);
+    border: none;
+    color: #fff;
+    font-weight: 600;
+    border-radius: 8px;
+    padding: 8px 16px;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+.btn-primary-custom:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(67,97,238,0.3); color: #fff; }
+.btn-primary-custom:active { transform: translateY(0); }
+.btn-primary-custom:disabled { opacity: .6; cursor: not-allowed; transform: none; box-shadow: none; }
+
+.btn-danger-custom {
+    background: #ef4444; border: none; color: #fff; font-weight: 600;
+    border-radius: 8px; padding: 8px 16px; cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+.btn-danger-custom:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(239,68,68,0.3); color: #fff; }
+.btn-danger-custom:active { transform: translateY(0); }
+.btn-danger-custom:disabled { opacity: .6; cursor: not-allowed; transform: none; box-shadow: none; }
+
+.btn-outline-custom {
+    border: 2px solid var(--primary);
+    color: var(--primary);
+    font-weight: 600;
+    border-radius: 8px;
+    padding: 8px 16px;
+    background: transparent;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.btn-outline-custom:hover { background: var(--primary); color: #fff; }
+.btn-outline-custom:active { transform: scale(0.97); }
+.btn-outline-custom:disabled { opacity: .55; cursor: not-allowed; }
+.btn-outline-custom:disabled:hover { background: transparent; color: var(--primary); }
+
+/* ── Media ──────────────────────────────────────────────── */
+video { border-radius: 8px; background: #000; }
+
+/* ── Status bits ────────────────────────────────────────── */
+.session-badge { font-size: 0.75rem; padding: 4px 10px; border-radius: 20px; }
+.connected { background: #d1fae5; color: #065f46; }
+.disconnected { background: #fee2e2; color: #991b1b; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+.status-dot.on { background: var(--success); }
+.status-dot.off { background: var(--danger); }
+
+/* ── Quick link tiles ───────────────────────────────────── */
+.quick-link { text-decoration: none; color: inherit; display: block; }
+.quick-link .glass-card { transition: transform 0.3s, box-shadow 0.3s; cursor: pointer; }
+.quick-link:hover .glass-card { transform: translateY(-3px); box-shadow: 0 12px 28px rgba(0,0,0,0.1); }
+
+/* ── Code / forms ───────────────────────────────────────── */
+pre { background: #1e293b; color: #e2e8f0; padding: 12px; border-radius: 8px; font-size: 0.8rem; max-height: 160px; overflow-y: auto; }
+label { font-weight: 500; font-size: 0.9rem; color: var(--text-muted); margin-bottom: 4px; }
+.param-hint { font-size: 0.75rem; color: #94a3b8; }
+::placeholder { color: #9ca3af !important; opacity: 1; }
+
+/* Bootstrap leaves <textarea> on the UA monospace font. */
+textarea, input, select, button { font-family: inherit; }
+textarea { resize: vertical; line-height: 1.5; color: var(--text-dark); }
+
+.form-control, .form-select {
+    border-radius: 8px;
+    border: 1px solid rgba(0,0,0,0.1);
+}
+.form-control-sm, .form-select-sm { border-radius: 6px; }
+.form-control:focus, .form-select:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(67,97,238,0.12);
+}
+.form-control-color { padding: 4px; }
+
+/* ── Page helpers ───────────────────────────────────────── */
+.page-title { text-align: center; margin: 24px 0; }
+.page-title h1 { font-weight: 700; font-size: 1.7rem; color: var(--text-dark); margin-bottom: 6px; }
+.page-title h1 i { color: var(--primary); }
+.page-title p { color: var(--text-muted); margin-bottom: 0; }
+
+.spin { animation: theme-rotation 1s linear infinite; }
+@keyframes theme-rotation { from { transform: rotate(0deg); } to { transform: rotate(359deg); } }

@@ -8,10 +8,18 @@ Run standalone:  python tests/fake_ssh_server.py --port 2222 --password pw
 from __future__ import annotations
 
 import argparse
+import logging
 import socket
 import threading
 
 import paramiko
+
+# paramiko logs connection teardown from its OWN thread, so the try/except in
+# serve() cannot suppress it: an aborted client (Ctrl-C mid-handshake, a wrong
+# password, a failed host-key check) prints a scary traceback for what is a
+# normal disconnect. This fixture exists to be quiet; silence the library's
+# logger and keep only the explicit prints below.
+logging.getLogger("paramiko").setLevel(logging.CRITICAL)
 
 
 class _Server(paramiko.ServerInterface):
@@ -43,16 +51,8 @@ class _Server(paramiko.ServerInterface):
         return True
 
 
-def serve(port: int, username: str, password: str, host_key_path: str,
-          ready=None):
-    key = paramiko.RSAKey(filename=host_key_path)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", port))
-    sock.listen(5)
-    if ready:
-        ready.set()
-
+def _accept_loop(sock: socket.socket, key, username: str, password: str) -> None:
+    """Serve connections on an already-bound socket until it closes."""
     while True:
         try:
             client, _addr = sock.accept()
@@ -74,18 +74,37 @@ def serve(port: int, username: str, password: str, host_key_path: str,
             pass
 
 
-def main():
+def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--port", type=int, default=2222)
     p.add_argument("--username", default="testuser")
     p.add_argument("--password", default="Sup3rS3cret!pw")
     p.add_argument("--host-key", default="/tmp/fake_ssh_host_rsa")
     a = p.parse_args()
-    threading.Thread(target=serve, args=(a.port, a.username, a.password,
-                                         a.host_key), daemon=True).start()
-    print(f"fake ssh on 127.0.0.1:{a.port}")
-    threading.Event().wait()
+
+    # Bind on the MAIN thread so a failure is reported as a failure. Binding in
+    # a daemon thread used to print "fake ssh on ..." even when the port was
+    # already taken, sending the test suite after a server that never existed.
+    key = paramiko.RSAKey(filename=a.host_key)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("127.0.0.1", a.port))
+    except OSError as exc:
+        print(f"ERROR: cannot bind 127.0.0.1:{a.port} — {exc}", flush=True)
+        return 1
+    sock.listen(5)
+
+    threading.Thread(target=_accept_loop,
+                     args=(sock, key, a.username, a.password),
+                     daemon=True).start()
+    print(f"fake ssh on 127.0.0.1:{a.port}", flush=True)
+    try:
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        return 0
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

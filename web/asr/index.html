@@ -3,87 +3,121 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width,initial-scale=1" />
-		<title>Speech Recognition</title>
- 
+		<title>Speech Recognition - LiveTalking</title>
+		<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+		<link rel="stylesheet" href="/theme.css">
+		<style>
+			body { padding-bottom: 24px; }
+			html { background: transparent; }
+			body { background: transparent; }
+			.card-header { padding: 12px 16px; }
+			.group {
+				background: rgba(241,245,249,0.7);
+				border-radius: 10px;
+				padding: 12px 14px;
+				margin-bottom: 12px;
+			}
+			.group > .label { font-size: .85rem; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }
+			.group label { font-weight: 500; font-size: .85rem; color: var(--text-dark); margin-right: 12px; }
+			#varArea { background: #fff; font-family: ui-monospace, Menlo, monospace; font-size: .8rem; }
+			#wssip { width: 100%; }
+			.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+		</style>
 	</head>
-	<body style="margin-left: 3%">
+	<body>
 		<script src="recorder-core.js" charset="UTF-8"></script>
 		<script src="wav.js" charset="UTF-8"></script>
 		<script src="pcm.js" charset="UTF-8"></script>
 
-		 
-		<div class="div_class_topArea">
+		<nav class="navbar navbar-dark navbar-themed" id="asrNav">
+			<div class="container-fluid px-4">
+				<a class="navbar-brand" href="/index.html"><i class="bi bi-camera-video-fill me-2"></i>LiveTalking</a>
+				<span class="text-white-50 small d-none d-md-inline">Speech recognition</span>
+			</div>
+		</nav>
 
-			<div class="div_class_recordControl">
-				ASR server address (required):
-				<br>
-				<input id="wssip" type="text" onchange="addresschange()" style=" width: 100%;height:100%" value="wss://www.funasr.com:10096/"/>
-				<br>
-				<a id="wsslink"  href="#" onclick="window.open('https://127.0.0.1:10095/', '_blank')"><div id="info_wslink">Click here to manually authorize wss://127.0.0.1:10095/</div></a>
-				<br>
-			<br>  
-			<div  style="border:2px solid #ccc;">
-				Select recording mode:<br/>
-    
-        <label><input name="recoder_mode" onclick="on_recoder_mode_change()" type="radio" value="mic" checked="true"/>Microphone </label>&nbsp;&nbsp;
-        <label><input name="recoder_mode" onclick="on_recoder_mode_change()" type="radio" value="file" />File </label> 
+		<div class="container mt-3" id="asrWrap">
+		<div class="glass-card">
+			<div class="card-header" id="asrHeader"><i class="bi bi-mic-fill"></i> Speech Recognition</div>
+			<div class="card-body">
 
+				<div class="group">
+					<div class="label">ASR server address (required)</div>
+					<input class="form-control form-control-sm" id="wssip" type="text" onchange="addresschange()"
+						   value="wss://www.funasr.com:10096/"/>
+					<a class="param-hint d-block mt-1" id="wsslink" href="#"
+					   onclick="window.open('https://127.0.0.1:10095/', '_blank')">
+						<div id="info_wslink">Click here to manually authorize wss://127.0.0.1:10095/</div>
+					</a>
 				</div>
-				
-				<br>
-				 <div id="mic_mode_div" style="border:2px solid #ccc;display:block;">
-				Select ASR model mode:<br/>
-    
-      <label><input name="asr_mode" type="radio" value="2pass" checked="true"/>2pass </label>&nbsp;&nbsp;
-      <label><input name="asr_mode" type="radio" value="online" />online </label>&nbsp;&nbsp;
-      <label><input name="asr_mode" type="radio" value="offline" />offline </label>
 
+				<div class="group">
+					<div class="label">Recording mode</div>
+					<label><input name="recoder_mode" onclick="on_recoder_mode_change()" type="radio" value="mic" checked="true"/> Microphone </label>
+					<label><input name="recoder_mode" onclick="on_recoder_mode_change()" type="radio" value="file" /> File </label>
 				</div>
-				
-				<div id="rec_mode_div" style="border:2px solid #ccc;display:none;">
-		 
-    
-		          <input type="file" id="upfile">
 
+				<div class="group" id="mic_mode_div">
+					<div class="label">ASR model mode</div>
+					<label><input name="asr_mode" type="radio" value="2pass" checked="true"/> 2pass </label>
+					<label><input name="asr_mode" type="radio" value="online" /> online </label>
+					<label><input name="asr_mode" type="radio" value="offline" /> offline </label>
 				</div>
-				<br>
-				<div id="use_itn_div" style="border:2px solid #ccc;display:block;">
-					Inverse text normalization (ITN):<br/>
-					<label><input name="use_itn" type="radio" value="false" checked="true"/>No </label>&nbsp;&nbsp;
-					<label><input name="use_itn" type="radio" value="true" />Yes </label>
-			   </div>
-			   <br>
-		        <div  style="border:2px solid #ccc;">
-					Hotword settings (one keyword per line, separate weight with a space, e.g. "alibaba 20"):
-					<br>
-	
-	
-					<textarea rows="3"  id="varHot"  style=" width: 100%;height:100%" >alibaba 20&#13;hello world 40</textarea>
-					<br>
-	
-					</div>
-				Speech recognition result:
-				<br>
-				
-				<textarea rows="10"  id="varArea" readonly="true" style=" width: 100%;height:100%" ></textarea>
-				<br>
-                <div id="info_div">Please click Start</div>
-				<div class="div_class_buttons">
-					<button id="btnConnect">Connect</button>
-					<button id="btnStart">Start</button>
-					<button id="btnStop">Stop</button>
- 
+
+				<div class="group" id="rec_mode_div" style="display:none;">
+					<div class="label">Audio file</div>
+					<input class="form-control form-control-sm" type="file" id="upfile">
 				</div>
-                
-				<audio id="audio_record" type="audio/wav" controls style="margin-top: 12px; width: 100%;"></audio>
+
+				<div class="group" id="use_itn_div">
+					<div class="label">Inverse text normalization (ITN)</div>
+					<label><input name="use_itn" type="radio" value="false" checked="true"/> No </label>
+					<label><input name="use_itn" type="radio" value="true" /> Yes </label>
+				</div>
+
+				<div class="group">
+					<div class="label">Hotwords <span class="param-hint">(one keyword per line, weight after a space)</span></div>
+					<textarea class="form-control form-control-sm" rows="3" id="varHot">alibaba 20&#13;hello world 40</textarea>
+				</div>
+
+				<div class="group">
+					<div class="label">Recognition result</div>
+					<textarea class="form-control form-control-sm" rows="8" id="varArea" readonly="true"></textarea>
+				</div>
+
+				<div class="d-flex align-items-center justify-content-between mb-2">
+					<span class="param-hint" id="info_div">Please click Start</span>
+					<span class="status-dot off" id="connDot"></span>
+				</div>
+				<div class="actions">
+					<button class="btn-primary-custom btn-sm" id="btnConnect"><i class="bi bi-plug"></i> Connect</button>
+					<button class="btn-primary-custom btn-sm" id="btnStart"><i class="bi bi-play-fill"></i> Start</button>
+					<button class="btn-danger-custom btn-sm" id="btnStop"><i class="bi bi-stop-fill"></i> Stop</button>
+				</div>
+
+				<audio id="audio_record" type="audio/wav" controls class="w-100 mt-3"></audio>
 			</div>
 		</div>
+		</div>
 
- 		<script src="wsconnecter.js" charset="utf-8"></script>
+		<script src="wsconnecter.js" charset="utf-8"></script>
 		<script src="main.js" charset="utf-8"></script>
-		
-
- 
-				
+		<script>
+			// When embedded (webrtcapi-asr.html), the host page already draws the
+			// nav and the card header — strip ours so nothing appears twice.
+			if (window.self !== window.top) {
+				document.getElementById('asrNav').style.display = 'none';
+				document.getElementById('asrHeader').style.display = 'none';
+				document.getElementById('asrWrap').style.marginTop = '0';
+				document.getElementById('asrWrap').className = '';
+				var card = document.querySelector('.glass-card');
+				card.style.boxShadow = 'none';
+				card.style.border = '0';
+				card.style.background = 'transparent';
+				card.style.marginBottom = '0';
+				document.querySelector('.card-body').style.padding = '0';
+			}
+		</script>
 	</body>
 </html>

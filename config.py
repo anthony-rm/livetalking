@@ -59,13 +59,26 @@ def parse_args():
 
     # ─── 数字人模型 ────────────────────────────────────────────────────
     parser.add_argument('--model', type=str, default='wav2lip',
-                        help="avatar model: musetalk/wav2lip/ultralight/remote")
+                        help="avatar model: musetalk/wav2lip/ultralight/remote. "
+                             "'remote' is shorthand for --worker_mode remote.")
+    parser.add_argument('--worker_mode', type=str, default='local',
+                        choices=['local', 'remote'],
+                        help="where GPU work runs: 'local' (default) keeps "
+                             "inference, avatar generation and enhance on this "
+                             "machine; 'remote' sends them to the GPU worker. "
+                             "The admin console toggle overrides this.")
     parser.add_argument('--remote_backend', type=str, default='musetalk',
                         choices=['musetalk', 'wav2lip'],
-                        help="remote GPU backend to target when --model=remote (musetalk/wav2lip)")
+                        help="remote GPU backend to target when --worker_mode=remote (musetalk/wav2lip)")
     parser.add_argument('--remote_worker', type=str, default='',
                         help="remote GPU worker host:port (e.g. 192.168.1.42:50051). "
                              "Can also be passed as LT_REMOTE_WORKER env var.")
+    parser.add_argument('--remote_pipeline', type=int, default=2,
+                        help="batches kept in flight to the remote worker (0 = "
+                             "one synchronous RPC per batch). 2 overlaps the "
+                             "next batch's transfer with the current one's GPU "
+                             "work, which is what recovers the link idle time; "
+                             "higher values only help if the GPU is the limit.")
     parser.add_argument('--avatar_id', type=str, default='wav2lip256_avatar1',
                         help="avatar id in data/avatars")
     parser.add_argument('--batch_size', type=int, default=16, help="infer batch")

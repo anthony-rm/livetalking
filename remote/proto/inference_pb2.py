@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0finference.proto\x12\x12livetalking.remote\"\x07\n\x05\x45mpty\"4\n\x06Tensor\x12\r\n\x05\x64type\x18\x01 \x01(\t\x12\r\n\x05shape\x18\x02 \x03(\x03\x12\x0c\n\x04\x64\x61ta\x18\x03 \x01(\x0c\"\"\n\x07OpReply\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0b\n\x03msg\x18\x02 \x01(\t\"]\n\x0bHealthReply\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0e\n\x06\x64\x65vice\x18\x02 \x01(\t\x12\x0f\n\x07\x62\x61\x63kend\x18\x03 \x01(\t\x12\x11\n\tavatar_id\x18\x04 \x01(\t\x12\x0e\n\x06\x64\x65tail\x18\x05 \x01(\t\"\x1c\n\tModelSpec\x12\x0f\n\x07\x62\x61\x63kend\x18\x01 \x01(\t\"_\n\rAvatarPayload\x12\x0f\n\x07\x62\x61\x63kend\x18\x01 \x01(\t\x12\x11\n\tavatar_id\x18\x02 \x01(\t\x12*\n\x06\x66rames\x18\x03 \x03(\x0b\x32\x1a.livetalking.remote.Tensor\"`\n\x0cInferRequest\x12\r\n\x05index\x18\x01 \x01(\x03\x12\x12\n\nbatch_size\x18\x02 \x01(\x05\x12-\n\taudiofeat\x18\x03 \x03(\x0b\x32\x1a.livetalking.remote.Tensor\"8\n\nInferReply\x12*\n\x06\x66rames\x18\x01 \x01(\x0b\x32\x1a.livetalking.remote.Tensor\"\xe8\x01\n\x0e\x45nhanceRequest\x12\x10\n\x08\x66ilename\x18\x01 \x01(\t\x12\x0e\n\x06source\x18\x02 \x01(\x0c\x12\r\n\x05width\x18\x03 \x01(\x05\x12\x0e\n\x06height\x18\x04 \x01(\x05\x12\x12\n\nbackground\x18\x05 \x01(\t\x12\x0b\n\x03\x66it\x18\x06 \x01(\t\x12\x10\n\x08strength\x18\x07 \x01(\x02\x12\x14\n\x0c\x66\x61\x63\x65_restore\x18\x08 \x01(\x08\x12\x0f\n\x07upscale\x18\t \x01(\x05\x12\x12\n\nmax_frames\x18\n \x01(\x05\x12\x12\n\nwant_matte\x18\x0b \x01(\x08\x12\x13\n\x0bwant_person\x18\x0c \x01(\x08\"U\n\x0c\x45nhanceReply\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0b\n\x03msg\x18\x02 \x01(\t\x12\x0f\n\x07\x61rchive\x18\x03 \x01(\x0c\x12\x0e\n\x06\x66rames\x18\x04 \x01(\x05\x12\x0b\n\x03\x66ps\x18\x05 \x01(\x01\x32\xd3\x03\n\x0cRemoteWorker\x12\x44\n\x06Health\x12\x19.livetalking.remote.Empty\x1a\x1f.livetalking.remote.HealthReply\x12G\n\tLoadModel\x12\x1d.livetalking.remote.ModelSpec\x1a\x1b.livetalking.remote.OpReply\x12L\n\nLoadAvatar\x12!.livetalking.remote.AvatarPayload\x1a\x1b.livetalking.remote.OpReply\x12N\n\nInferBatch\x12 .livetalking.remote.InferRequest\x1a\x1e.livetalking.remote.InferReply\x12@\n\x06Unload\x12\x19.livetalking.remote.Empty\x1a\x1b.livetalking.remote.OpReply\x12T\n\x0c\x45nhanceVideo\x12\".livetalking.remote.EnhanceRequest\x1a .livetalking.remote.EnhanceReplyb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0finference.proto\x12\x12livetalking.remote\"\x07\n\x05\x45mpty\"4\n\x06Tensor\x12\r\n\x05\x64type\x18\x01 \x01(\t\x12\r\n\x05shape\x18\x02 \x03(\x03\x12\x0c\n\x04\x64\x61ta\x18\x03 \x01(\x0c\"\"\n\x07OpReply\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0b\n\x03msg\x18\x02 \x01(\t\"\x93\x01\n\x0bHealthReply\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0e\n\x06\x64\x65vice\x18\x02 \x01(\t\x12\x0f\n\x07\x62\x61\x63kend\x18\x03 \x01(\t\x12\x11\n\tavatar_id\x18\x04 \x01(\t\x12\x0e\n\x06\x64\x65tail\x18\x05 \x01(\t\x12\x10\n\x08revision\x18\x06 \x01(\t\x12\x0c\n\x04\x62usy\x18\x07 \x01(\x08\x12\x14\n\x0c\x63\x61pabilities\x18\x08 \x03(\t\"\x1c\n\tModelSpec\x12\x0f\n\x07\x62\x61\x63kend\x18\x01 \x01(\t\"_\n\rAvatarPayload\x12\x0f\n\x07\x62\x61\x63kend\x18\x01 \x01(\t\x12\x11\n\tavatar_id\x18\x02 \x01(\t\x12*\n\x06\x66rames\x18\x03 \x03(\x0b\x32\x1a.livetalking.remote.Tensor\"X\n\nInferReply\x12*\n\x06\x66rames\x18\x01 \x01(\x0b\x32\x1a.livetalking.remote.Tensor\x12\x0c\n\x04jpeg\x18\x02 \x03(\x0c\x12\x10\n\x08\x65ncoding\x18\x03 \x01(\t\"\xf0\x01\n\x0cInferRequest\x12\r\n\x05index\x18\x01 \x01(\x03\x12\x12\n\nbatch_size\x18\x02 \x01(\x05\x12-\n\taudiofeat\x18\x03 \x03(\x0b\x32\x1a.livetalking.remote.Tensor\x12\x15\n\rwant_encoding\x18\x04 \x01(\t\x12\x14\n\x0cjpeg_quality\x18\x05 \x01(\x05\x12.\n\nfeat_block\x18\x06 \x01(\x0b\x32\x1a.livetalking.remote.Tensor\x12\x14\n\x0c\x66\x65\x61t_offsets\x18\x07 \x03(\x05\x12\x1b\n\x13\x66\x65\x61t_rows_per_frame\x18\x08 \x01(\x05\"\xe8\x01\n\x0e\x45nhanceRequest\x12\x10\n\x08\x66ilename\x18\x01 \x01(\t\x12\x0e\n\x06source\x18\x02 \x01(\x0c\x12\r\n\x05width\x18\x03 \x01(\x05\x12\x0e\n\x06height\x18\x04 \x01(\x05\x12\x12\n\nbackground\x18\x05 \x01(\t\x12\x0b\n\x03\x66it\x18\x06 \x01(\t\x12\x10\n\x08strength\x18\x07 \x01(\x02\x12\x14\n\x0c\x66\x61\x63\x65_restore\x18\x08 \x01(\x08\x12\x0f\n\x07upscale\x18\t \x01(\x05\x12\x12\n\nmax_frames\x18\n \x01(\x05\x12\x12\n\nwant_matte\x18\x0b \x01(\x08\x12\x13\n\x0bwant_person\x18\x0c \x01(\x08\"U\n\x0c\x45nhanceReply\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0b\n\x03msg\x18\x02 \x01(\t\x12\x0f\n\x07\x61rchive\x18\x03 \x01(\x0c\x12\x0e\n\x06\x66rames\x18\x04 \x01(\x05\x12\x0b\n\x03\x66ps\x18\x05 \x01(\x01\"\x87\x01\n\x15GenerateAvatarRequest\x12\x0f\n\x07\x62\x61\x63kend\x18\x01 \x01(\t\x12\x11\n\tavatar_id\x18\x02 \x01(\t\x12\x0e\n\x06source\x18\x03 \x01(\x0c\x12\x10\n\x08\x66ilename\x18\x04 \x01(\t\x12\x13\n\x0bsource_path\x18\x05 \x01(\t\x12\x13\n\x0bparams_json\x18\x06 \x01(\t\"\x7f\n\x13GenerateAvatarReply\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0b\n\x03msg\x18\x02 \x01(\t\x12\x0f\n\x07\x61rchive\x18\x03 \x01(\x0c\x12\x0e\n\x06\x66rames\x18\x04 \x01(\x05\x12\x17\n\x0fwritten_locally\x18\x05 \x01(\x08\x12\x15\n\rartifact_path\x18\x06 \x01(\t2\xb9\x04\n\x0cRemoteWorker\x12\x44\n\x06Health\x12\x19.livetalking.remote.Empty\x1a\x1f.livetalking.remote.HealthReply\x12G\n\tLoadModel\x12\x1d.livetalking.remote.ModelSpec\x1a\x1b.livetalking.remote.OpReply\x12L\n\nLoadAvatar\x12!.livetalking.remote.AvatarPayload\x1a\x1b.livetalking.remote.OpReply\x12N\n\nInferBatch\x12 .livetalking.remote.InferRequest\x1a\x1e.livetalking.remote.InferReply\x12@\n\x06Unload\x12\x19.livetalking.remote.Empty\x1a\x1b.livetalking.remote.OpReply\x12T\n\x0c\x45nhanceVideo\x12\".livetalking.remote.EnhanceRequest\x1a .livetalking.remote.EnhanceReply\x12\x64\n\x0eGenerateAvatar\x12).livetalking.remote.GenerateAvatarRequest\x1a\'.livetalking.remote.GenerateAvatarReplyb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -37,20 +37,24 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_TENSOR']._serialized_end=100
   _globals['_OPREPLY']._serialized_start=102
   _globals['_OPREPLY']._serialized_end=136
-  _globals['_HEALTHREPLY']._serialized_start=138
-  _globals['_HEALTHREPLY']._serialized_end=231
-  _globals['_MODELSPEC']._serialized_start=233
-  _globals['_MODELSPEC']._serialized_end=261
-  _globals['_AVATARPAYLOAD']._serialized_start=263
-  _globals['_AVATARPAYLOAD']._serialized_end=358
-  _globals['_INFERREQUEST']._serialized_start=360
-  _globals['_INFERREQUEST']._serialized_end=456
-  _globals['_INFERREPLY']._serialized_start=458
-  _globals['_INFERREPLY']._serialized_end=514
-  _globals['_ENHANCEREQUEST']._serialized_start=517
-  _globals['_ENHANCEREQUEST']._serialized_end=749
-  _globals['_ENHANCEREPLY']._serialized_start=751
-  _globals['_ENHANCEREPLY']._serialized_end=836
-  _globals['_REMOTEWORKER']._serialized_start=839
-  _globals['_REMOTEWORKER']._serialized_end=1306
+  _globals['_HEALTHREPLY']._serialized_start=139
+  _globals['_HEALTHREPLY']._serialized_end=286
+  _globals['_MODELSPEC']._serialized_start=288
+  _globals['_MODELSPEC']._serialized_end=316
+  _globals['_AVATARPAYLOAD']._serialized_start=318
+  _globals['_AVATARPAYLOAD']._serialized_end=413
+  _globals['_INFERREPLY']._serialized_start=415
+  _globals['_INFERREPLY']._serialized_end=503
+  _globals['_INFERREQUEST']._serialized_start=506
+  _globals['_INFERREQUEST']._serialized_end=746
+  _globals['_ENHANCEREQUEST']._serialized_start=749
+  _globals['_ENHANCEREQUEST']._serialized_end=981
+  _globals['_ENHANCEREPLY']._serialized_start=983
+  _globals['_ENHANCEREPLY']._serialized_end=1068
+  _globals['_GENERATEAVATARREQUEST']._serialized_start=1071
+  _globals['_GENERATEAVATARREQUEST']._serialized_end=1206
+  _globals['_GENERATEAVATARREPLY']._serialized_start=1208
+  _globals['_GENERATEAVATARREPLY']._serialized_end=1335
+  _globals['_REMOTEWORKER']._serialized_start=1338
+  _globals['_REMOTEWORKER']._serialized_end=1907
 # @@protoc_insertion_point(module_scope)

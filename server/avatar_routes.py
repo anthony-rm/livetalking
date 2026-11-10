@@ -232,15 +232,22 @@ async def list_avatars(request):
     """
     GET /api/avatars
     列出 data/avatars 目录下所有已生成的 Avatar ID（按名称排序）。
+
+    Only directories with a recognizable artifact layout are listed: the drop-in
+    folder also holds .DS_Store/.gitkeep, and the connect page turns this list
+    into a dropdown -- offering an entry that cannot possibly load is a bug the
+    user only discovers on connect.
     """
     try:
+        from avatars import detect as avatar_detect
         avatars_dir = os.path.abspath('./data/avatars')
         if not os.path.isdir(avatars_dir):
             return json_ok(data={"avatars": []})
-        avatars = sorted([
+        avatars = sorted(
             name for name in os.listdir(avatars_dir)
             if os.path.isdir(os.path.join(avatars_dir, name))
-        ])
+            and avatar_detect.detect_backend(name, root=avatars_dir)[0] is not None
+        )
         return json_ok(data={"avatars": avatars})
     except Exception as e:
         logger.exception('list_avatars exception:')

@@ -3,299 +3,121 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LiveTalking Digital Human Interaction Platform</title>
+    <title>LiveTalking Dashboards</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="/theme.css">
     <style>
-        :root {
-            --primary-color: #4361ee;
-            --secondary-color: #3f37c9;
-            --accent-color: #4895ef;
-            --background-color: #f8f9fa;
-            --card-bg: #ffffff;
-            --text-color: #212529;
-            --border-radius: 10px;
-            --box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: var(--background-color);
-            color: var(--text-color);
-            min-height: 100vh;
-            padding-top: 20px;
-        }
-
-        .dashboard-container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-
-        .card {
-            background-color: var(--card-bg);
-            border-radius: var(--border-radius);
-            box-shadow: var(--box-shadow);
-            border: none;
-            margin-bottom: 20px;
-            overflow: hidden;
-        }
-
-        .card-header {
-            background-color: var(--primary-color);
-            color: white;
-            font-weight: 600;
-            padding: 15px 20px;
-            border-bottom: none;
-        }
-
         .video-container {
             position: relative;
             width: 100%;
             background-color: #000;
-            border-radius: var(--border-radius);
+            border-radius: 8px;
             overflow: hidden;
             display: flex;
             justify-content: center;
             align-items: center;
         }
 
-        video {
-            max-width: 100%;
-            max-height: 100%;
-            display: block;
-            border-radius: var(--border-radius);
-        }
-
-        .controls-container {
-            padding: 20px;
-        }
-
-        .btn-primary {
-            background-color: var(--primary-color);
-            border-color: var(--primary-color);
-        }
-
-        .btn-primary:hover {
-            background-color: var(--secondary-color);
-            border-color: var(--secondary-color);
-        }
-
-        .btn-outline-primary {
-            color: var(--primary-color);
-            border-color: var(--primary-color);
-        }
-
-        .btn-outline-primary:hover {
-            background-color: var(--primary-color);
-            color: white;
-        }
-
-        .form-control {
-            border-radius: var(--border-radius);
-            padding: 10px 15px;
-            border: 1px solid #ced4da;
-        }
-
-        .form-control:focus {
-            border-color: var(--accent-color);
-            box-shadow: 0 0 0 0.25rem rgba(67, 97, 238, 0.25);
-        }
-
-        .status-indicator {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 5px;
-        }
-
-        .status-connected {
-            background-color: #28a745;
-        }
-
-        .status-disconnected {
-            background-color: #dc3545;
-        }
-
-        .status-connecting {
-            background-color: #ffc107;
-        }
+        video { max-width: 100%; max-height: 100%; display: block; }
 
         .asr-container {
             height: 300px;
             overflow-y: auto;
             padding: 15px;
-            background-color: #f8f9fa;
-            border-radius: var(--border-radius);
-            border: 1px solid #ced4da;
+            background-color: #f8fafc;
+            border-radius: 8px;
+            border: 1px solid rgba(0,0,0,0.06);
         }
 
         .asr-text {
             margin-bottom: 10px;
             padding: 10px;
             background-color: white;
-            border-radius: var(--border-radius);
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+            font-size: 0.9rem;
         }
 
-        .user-message {
-            background-color: #e3f2fd;
-            border-left: 4px solid var(--primary-color);
-        }
-
-        .system-message {
-            background-color: #f1f8e9;
-            border-left: 4px solid #8bc34a;
-        }
+        .user-message { background-color: #eef3ff; border-left: 4px solid var(--primary); }
+        .system-message { background-color: #eafaf3; border-left: 4px solid var(--success); }
 
         .recording-indicator {
             position: absolute;
             top: 15px;
             right: 15px;
-            background-color: rgba(220, 53, 69, 0.8);
+            background-color: rgba(239, 68, 68, 0.85);
             color: white;
             padding: 5px 10px;
             border-radius: 20px;
             font-size: 0.8rem;
             display: none;
         }
-
-        .recording-indicator.active {
-            display: flex;
-            align-items: center;
-        }
-
+        .recording-indicator.active { display: flex; align-items: center; }
         .recording-indicator .blink {
-            width: 10px;
-            height: 10px;
-            background-color: #fff;
-            border-radius: 50%;
-            margin-right: 5px;
-            animation: blink 1s infinite;
+            width: 10px; height: 10px; background-color: #fff;
+            border-radius: 50%; margin-right: 5px; animation: blink 1s infinite;
         }
 
-        @keyframes blink {
-            0% { opacity: 1; }
-            50% { opacity: 0.3; }
-            100% { opacity: 1; }
-        }
-
-        .mode-switch {
-            margin-bottom: 20px;
-        }
-
-        .nav-tabs .nav-link {
-            color: var(--text-color);
-            border: none;
-            padding: 10px 20px;
-            border-radius: var(--border-radius) var(--border-radius) 0 0;
-        }
-
-        .nav-tabs .nav-link.active {
-            color: var(--primary-color);
-            background-color: var(--card-bg);
-            border-bottom: 3px solid var(--primary-color);
-            font-weight: 600;
-        }
-
-        .tab-content {
-            padding: 20px;
-            background-color: var(--card-bg);
-            border-radius: 0 0 var(--border-radius) var(--border-radius);
-        }
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
 
         .settings-panel {
             padding: 15px;
-            background-color: #f8f9fa;
-            border-radius: var(--border-radius);
-            margin-top: 15px;
+            background-color: rgba(241,245,249,0.7);
+            border-radius: 10px;
         }
 
-        .footer {
-            text-align: center;
-            margin-top: 30px;
-            padding: 20px 0;
-            color: #6c757d;
-            font-size: 0.9rem;
-        }
-        
         .voice-record-btn {
-            width: 60px;
-            height: 60px;
-            border-radius: 50%;
-            background-color: var(--primary-color);
-            color: white;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-            margin: 0 auto;
+            width: 60px; height: 60px; border-radius: 50%;
+            background: linear-gradient(135deg, #4361ee, #3f37c9);
+            color: white; display: flex; justify-content: center; align-items: center;
+            cursor: pointer; transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 4px 14px rgba(67,97,238,0.3); margin: 0 auto;
         }
-        
-        .voice-record-btn:hover {
-            background-color: var(--secondary-color);
-            transform: scale(1.05);
-        }
-        
-        .voice-record-btn:active {
-            background-color: #dc3545;
-            transform: scale(0.95);
-        }
-        
-        .voice-record-btn i {
-            font-size: 24px;
-        }
-        
-        .voice-record-label {
-            text-align: center;
-            margin-top: 10px;
-            font-size: 14px;
-            color: #6c757d;
-        }
-        
-        .video-size-control {
-            margin-top: 15px;
-        }
-        
-        .recording-pulse {
-            animation: pulse 1.5s infinite;
-        }
-        
+        .voice-record-btn:hover { transform: translateY(-2px); }
+        .voice-record-btn:active { transform: scale(0.95); }
+        .voice-record-btn i { font-size: 24px; }
+
+        .voice-record-label { text-align: center; margin-top: 10px; font-size: 0.85rem; color: var(--text-muted); }
+
+        .recording-pulse { animation: pulse 1.5s infinite; }
+
         @keyframes pulse {
-            0% {
-                box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7);
-            }
-            70% {
-                box-shadow: 0 0 0 15px rgba(220, 53, 69, 0);
-            }
-            100% {
-                box-shadow: 0 0 0 0 rgba(220, 53, 69, 0);
-            }
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            70% { box-shadow: 0 0 0 15px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
         }
+
+        .nav-tabs .nav-link { color: var(--text-muted); border: none; font-weight: 600; }
+        .nav-tabs .nav-link.active { color: var(--primary); border-bottom: 3px solid var(--primary); background: transparent; }
+        .tab-content { padding-top: 16px; }
+
+        .status-indicator { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .status-connected { background-color: var(--success); }
+        .status-disconnected { background-color: var(--danger); }
+        .status-connecting { background-color: var(--warning); }
     </style>
 </head>
 <body>
-    <div class="dashboard-container">
-        <div class="row">
-            <div class="col-12">
-                <h1 class="text-center mb-4">LiveTalking Digital Human Interaction Platform</h1>
-            </div>
+    <nav class="navbar navbar-dark navbar-themed">
+        <div class="container-fluid px-4">
+            <a class="navbar-brand" href="/index.html"><i class="bi bi-camera-video-fill me-2"></i>LiveTalking</a>
+            <span class="text-white-50 small d-none d-md-inline">Digital human interaction dashboard</span>
         </div>
+    </nav>
 
+    <div class="container mt-4">
         <div class="row">
             <!-- Video area -->
             <div class="col-lg-8">
-                <div class="card">
+                <div class="glass-card">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <div>
                             <span class="status-indicator status-disconnected" id="connection-status"></span>
                             <span id="status-text">Disconnected</span>
                         </div>
                     </div>
-                    <div class="card-body p-0">
+                    <div class="card-body">
                         <div class="video-container">
                             <video id="video" autoplay playsinline></video>
                             <div class="recording-indicator" id="recording-indicator">
@@ -303,46 +125,35 @@
                                 <span>Recording</span>
                             </div>
                         </div>
-                        
-                        <div class="controls-container">
-                            <div class="row">
-                                <div class="col-md-6 mb-3">
-                                    <button class="btn btn-primary w-100" id="start">
+
+                        <div class="mt-3">
+                            <div class="row g-2">
+                                <div class="col-md-6">
+                                    <button class="btn-primary-custom w-100" id="start">
                                         <i class="bi bi-play-fill"></i> Connect
                                     </button>
-                                    <button class="btn btn-danger w-100" id="stop" style="display: none;">
+                                    <button class="btn-danger-custom w-100" id="stop" style="display: none;">
                                         <i class="bi bi-stop-fill"></i> Disconnect
                                     </button>
                                 </div>
-                                <div class="col-md-6 mb-3">
-                                    <div class="d-flex">
-                                        <button class="btn btn-outline-primary flex-grow-1 me-2" id="btn_start_record">
-                                            <i class="bi bi-record-fill"></i> Start Recording
+                                <div class="col-md-6">
+                                    <div class="d-flex gap-2">
+                                        <button class="btn-outline-custom flex-grow-1" id="btn_start_record">
+                                            <i class="bi bi-record-circle"></i> Start Recording
                                         </button>
-                                        <button class="btn btn-outline-danger flex-grow-1" id="btn_stop_record" disabled>
-                                            <i class="bi bi-stop-fill"></i> Stop Recording
+                                        <button class="btn-outline-custom flex-grow-1" id="btn_stop_record" disabled>
+                                            <i class="bi bi-stop-circle"></i> Stop Recording
                                         </button>
                                     </div>
                                 </div>
                             </div>
 
-                            <div class="row">
-                                <div class="col-12">
-                                    <div class="video-size-control">
-                                        <label for="video-size-slider" class="form-label">Video size: <span id="video-size-value">100%</span></label>
-                                        <input type="range" class="form-range" id="video-size-slider" min="50" max="150" value="100">
-                                    </div>
-                                </div>
-                            </div>
-                            
                             <div class="settings-panel mt-3">
-                                <div class="row">
-                                    <div class="col-md-12">
-                                        <div class="form-check form-switch mb-3">
-                                            <input class="form-check-input" type="checkbox" id="use-stun">
-                                            <label class="form-check-label" for="use-stun">Use STUN server</label>
-                                        </div>
-                                    </div>
+                                <label for="video-size-slider" class="form-label">Video size: <span id="video-size-value">100%</span></label>
+                                <input type="range" class="form-range" id="video-size-slider" min="50" max="150" value="100">
+                                <div class="form-check form-switch mt-2 mb-0">
+                                    <input class="form-check-input" type="checkbox" id="use-stun">
+                                    <label class="form-check-label small" for="use-stun">Use STUN server</label>
                                 </div>
                             </div>
                         </div>
@@ -352,7 +163,7 @@
 
             <!-- Right side interaction -->
             <div class="col-lg-4">
-                <div class="card">
+                <div class="glass-card">
                     <div class="card-header">
                         <ul class="nav nav-tabs card-header-tabs" id="interaction-tabs" role="tablist">
                             <li class="nav-item" role="presentation">
@@ -372,31 +183,31 @@
                                         System: Welcome to LiveTalking, click "Connect" to start chatting.
                                     </div>
                                 </div>
-                                
+
                                 <form id="chat-form">
-                                    <div class="input-group mb-3">
-                                        <textarea class="form-control" id="chat-message" rows="3" placeholder="Type your message to the digital human..."></textarea>
-                                        <button class="btn btn-primary" type="submit">
-                                            <i class="bi bi-send"></i> Send
-                                        </button>
+                                    <div class="mb-3">
+                                        <textarea class="form-control form-control-sm" id="chat-message" rows="3" placeholder="Type your message to the digital human..."></textarea>
                                     </div>
+                                    <button class="btn-primary-custom w-100" type="submit">
+                                        <i class="bi bi-send"></i> Send
+                                    </button>
                                 </form>
-                                
+
                                 <!-- Press and hold to talk button -->
-                                <div class="voice-record-btn" id="voice-record-btn">
+                                <div class="voice-record-btn mt-3" id="voice-record-btn">
                                     <i class="bi bi-mic-fill"></i>
                                 </div>
                                 <div class="voice-record-label">Press and hold to talk, release to send</div>
                             </div>
-                            
+
                             <!-- Read Aloud mode -->
                             <div class="tab-pane fade" id="tts" role="tabpanel" aria-labelledby="tts-tab">
                                 <form id="echo-form">
                                     <div class="mb-3">
                                         <label for="message" class="form-label">Text to read aloud</label>
-                                        <textarea class="form-control" id="message" rows="6" placeholder="Enter the text you want the avatar to read..."></textarea>
+                                        <textarea class="form-control form-control-sm" id="message" rows="6" placeholder="Enter the text you want the avatar to read..."></textarea>
                                     </div>
-                                    <button type="submit" class="btn btn-primary w-100">
+                                    <button type="submit" class="btn-primary-custom w-100">
                                         <i class="bi bi-volume-up"></i> Read Aloud
                                     </button>
                                 </form>
@@ -405,10 +216,6 @@
                     </div>
                 </div>
             </div>
-        </div>
-
-        <div class="footer">
-            <p>Made with ❤️ by Marstaos | Frontend & Performance Optimization</p>
         </div>
     </div>
 

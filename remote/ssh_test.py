@@ -1,4 +1,4 @@
-"""Verify Windows-PC SSH credentials on behalf of the admin console.
+"""Verify the remote GPU host's SSH credentials on behalf of the admin console.
 
 Used by the "Test SSH" button. paramiko authenticates over SSH and runs one
 trivial command to fetch the remote hostname -- that proves the username,
@@ -45,11 +45,12 @@ def test_ssh(username: str, host: str, password: str, *, port: int = DEFAULT_SSH
                 "paramiko is not installed (pip install paramiko)"}
 
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.RejectPolicy())
-
-    if trust_new:
-        # First-contact convenience: accept and report, but the caller is told.
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # Accept the key during the handshake and do our OWN comparison afterwards.
+    # paramiko's RejectPolicy aborts before we can see the fingerprint, so a
+    # previously pinned key could never be matched -- it would report
+    # "not trusted yet" on every call. Verification happens below against
+    # expected_fingerprint; untrusted decisions are made by the caller.
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
     try:
         client.connect(
@@ -87,16 +88,25 @@ def test_ssh(username: str, host: str, password: str, *, port: int = DEFAULT_SSH
         key = transport.get_remote_server_key()
         fp = _fingerprint(key)
 
-        if expected_fingerprint and expected_fingerprint != fp:
-            return {"ok": False, "host": host, "port": port, "fingerprint": fp,
-                    "message": "HOST KEY CHANGED — refusing. Expected "
-                               f"{expected_fingerprint[:16]}..., got {fp[:16]}... "
-                               "Possible man-in-the-middle; verify the PC."}
+        if expected_fingerprint:
+            if expected_fingerprint != fp:
+                return {"ok": False, "host": host, "port": port, "fingerprint": fp,
+                        "message": "HOST KEY CHANGED — refusing. Expected "
+                                   f"{expected_fingerprint[:16]}..., got {fp[:16]}... "
+                                   "Possible man-in-the-middle; verify the server, or "
+                                   "forget the credentials to re-pin."}
+        elif not trust_new:
+            # First contact and the user has not opted in: report the fingerprint
+            # so they can confirm it, and refuse to authenticate yet.
+            return {"ok": False, "host": host, "port": port,
+                    "fingerprint": fp, "needs_trust": True,
+                    "message": "host key not seen before — tick \"Trust new host "
+                               "key\" to pin this fingerprint"}
 
         stdin, stdout, stderr = client.exec_command(_PROBE_CMD, timeout=timeout)
         try:
             remote_host = stdout.read().decode("utf-8", "replace").strip()
-        except socket.timeout:
+        except (socket.timeout, TimeoutError):
             # The command ran but the far end never closed the channel. Auth and
             # the host key are already proven, which is what this test is for.
             remote_host = ""
@@ -104,6 +114,21 @@ def test_ssh(username: str, host: str, password: str, *, port: int = DEFAULT_SSH
                 "hostname": remote_host, "fingerprint": fp,
                 "new_host_key": bool(trust_new and not expected_fingerprint),
                 "message": f"connected to {remote_host or host}"}
+    except (socket.timeout, TimeoutError):
+        # Auth succeeded and the key checked out; the shell channel just did not
+        # come up. That is a successful credential test, so report ok with no
+        # remote hostname rather than a failure.
+        return {"ok": True, "host": host, "port": port, "hostname": "",
+                "message": "authenticated (shell channel did not respond)"}
+    except Exception as exc:  # noqa: BLE001
+        # Contract: this function never raises. Anything reaching here happened
+        # AFTER authentication succeeded (the key was already fingerprint-checked
+        # above), so the credentials are proven -- it is the shell/exec channel
+        # that misbehaved. Report that honestly instead of blaming the password.
+        return {"ok": True, "host": host, "port": port, "hostname": "",
+                "channel_error": f"{type(exc).__name__}: {exc}",
+                "message": "authenticated (could not run a remote command: "
+                           f"{type(exc).__name__})"}
     finally:
         client.close()
 

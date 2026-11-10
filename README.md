@@ -13,7 +13,8 @@ notices are retained in [LICENSE](./LICENSE) and in the source file headers.
 
 | Area | Where | What |
 |------|-------|------|
-| Remote GPU worker | `remote/`, `avatars/remote_avatar.py` | Run avatar inference on a separate CUDA box over gRPC while the host keeps TTS, ASR features and streaming. See [docs/remote-gpu.md](docs/remote-gpu.md). |
+| Remote GPU worker | `remote/`, `avatars/remote_avatar.py` | Run avatar inference on a separate CUDA box over gRPC while the host keeps TTS, ASR features and streaming. This machine is the host by default. See [docs/remote-gpu.md](docs/remote-gpu.md). |
+| Deploy pipeline | `deploy.sh`, `scripts/deploy_remote.py` | One command ships the local working tree to the GPU box as a new release, swaps the `current` symlink, restarts the worker and verifies the revision it serves. Rollback, shared weights, no-sessions-interrupted. See [docs/remote-gpu.md](docs/remote-gpu.md#updating-the-box-deploysh). |
 | Base-video preprocessing | `tools/enhance/`, `server/enhance_routes.py` | Matting (RVM), super-resolution, face restore (GFPGAN), 9:16 recomposition and background swap before avatar extraction. |
 | Avatar Studio | `web/avatar.html`, `docs/avatar-studio.md` | One page that either enhances only or enhances-then-generates an avatar, sharing one job list. |
 | Model lifecycle | `app.py`, `server/routes.py` | Lazy load on first connect, explicit unload and app restart, exposed as `/api/model/*` and in the admin console. |
@@ -178,6 +179,7 @@ Other project documents:
 |----------|-------------|
 | [MODELS.md](MODELS.md) | Checkpoint inventory and placement |
 | [docs/remote-gpu.md](docs/remote-gpu.md) | Remote GPU worker over gRPC (admin UI + SSH setup) |
+| [docs/remote-gpu-setup.md](docs/remote-gpu-setup.md) | Install and configure the GPU box: CUDA torch, deps, weights, SSH-only transport |
 | [tools/enhance/README.md](tools/enhance/README.md) | Base-video preprocessing pipeline |
 
 ---

@@ -88,7 +88,14 @@ class TaskManager:
             def progress_callback(p):
                 task.progress = p
 
-            if task.model_type == "musetalk":
+            # Avatar creation is the heaviest GPU work in the app (per-frame VAE
+            # encode + face parsing). When a worker is configured, build it
+            # THERE; only the small artifact comes back. Falling back to local
+            # generation would run for hours on MPS/CPU and is not what the
+            # remote configuration promises.
+            if self._should_use_remote():
+                self._run_remote(task, progress_callback)
+            elif task.model_type == "musetalk":
                 from avatars.musetalk.genavatar import generate_avatar
                 generate_avatar(
                     video_path=task.params['video_path'],
@@ -126,6 +133,79 @@ class TaskManager:
             logger.error(f"Task {task_id} failed: {e}")
         finally:
             task.end_time = time.time()
+
+    def _should_use_remote(self) -> bool:
+        """True when avatar creation should run on the GPU worker.
+
+        Gated on the local/remote toggle AND an effective address, so a
+        configured-but-toggled-off box never quietly moves a multi-hour job to
+        the worker (or the reverse). Import failures (grpc missing) degrade to
+        local generation rather than failing every task.
+        """
+        try:
+            from remote.settings import remote_active
+            return remote_active()
+        except Exception:  # noqa: BLE001
+            logger.warning("[avatar] remote mode lookup failed; running locally",
+                           exc_info=True)
+            return False
+
+    def _run_remote(self, task, progress_callback) -> None:
+        """Generate `task` on the worker and materialise its artifact locally.
+
+        The worker returns a zip of exactly what genavatar wrote, so the host
+        ends up with the same `data/avatars/<id>/` tree as a local run — every
+        downstream consumer (inference, paste_back, /api/avatars) is unchanged.
+        """
+        import io
+        import shutil
+        import zipfile
+
+        from remote.client import RemoteClient, RemoteWorkerError
+        from remote.settings import effective_address
+
+        address = effective_address()
+        progress_callback(2)
+        source_path = task.params["video_path"]
+        if not os.path.isfile(source_path):
+            raise FileNotFoundError(f"source clip not found: {source_path}")
+
+        # Ship the clip bytes, not a path: the box has no access to this
+        # machine's filesystem. A typical clip is a few MB, far cheaper than
+        # syncing a directory.
+        with open(source_path, "rb") as fh:
+            source_bytes = fh.read()
+
+        params = {k: v for k, v in task.params.items()
+                  if k not in ("video_path", "save_path", "source_job")}
+        progress_callback(5)
+
+        client = RemoteClient(address)
+        try:
+            archive = client.generate_avatar(
+                task.model_type, task.avatar_id,
+                source_bytes=source_bytes,
+                filename=os.path.basename(source_path),
+                params=params)
+        finally:
+            client.close()
+        progress_callback(90)
+
+        save_path = task.params.get("save_path", "./data/avatars")
+        dest = os.path.join(save_path, task.avatar_id)
+        tmp = dest + ".tmp-remote"
+        shutil.rmtree(tmp, ignore_errors=True)
+        os.makedirs(tmp, exist_ok=True)
+        with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+            zf.extractall(tmp)
+        # Replace atomically: a partial extract must never look like an avatar.
+        shutil.rmtree(dest, ignore_errors=True)
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        os.replace(tmp, dest)
+        task.params["generated_on"] = "remote"
+        logger.info(f"[avatar] task {task.task_id} generated on {address} "
+                    f"-> {dest}")
+        progress_callback(99)
 
     def _notify(self, task):
         if not task.notify_url:

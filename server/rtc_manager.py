@@ -22,7 +22,7 @@ from utils.logger import logger
 
 
 from server.session_manager import session_manager
-from server.session_manager import MaxSessionError
+from server.session_manager import MaxSessionError, SessionKilledError
 
 class RTCManager:
     """
@@ -38,6 +38,33 @@ class RTCManager:
         """
         self.opt = opt
         self.pcs: set = set()
+        # sessionid → PeerConnection. Killing a session has to close its pc too:
+        # the avatar's render threads stop producing frames, but the browser
+        # keeps a "connected" transceiver that never receives them unless the
+        # peer connection is closed as well.
+        self.pc_by_session: Dict[str, RTCPeerConnection] = {}
+
+    def _track_pc(self, pc, sessionid):
+        self.pcs.add(pc)
+        self.pc_by_session[sessionid] = pc
+
+    def _forget_pc(self, pc):
+        self.pcs.discard(pc)
+        for sid, known in list(self.pc_by_session.items()):
+            if known is pc:
+                self.pc_by_session.pop(sid, None)
+
+    async def close_session(self, sessionid: str) -> bool:
+        """关闭该会话的 PeerConnection；会话本身由 session_manager 销毁。"""
+        pc = self.pc_by_session.pop(sessionid, None)
+        if pc is None:
+            return False
+        try:
+            await pc.close()
+        except Exception:  # noqa: BLE001
+            logger.warning('closing pc for session %s failed', sessionid, exc_info=True)
+        self.pcs.discard(pc)
+        return True
 
     async def _create_pc_and_answer(self, avatar_session, sessionid, offer):
         """创建 PeerConnection、添加轨道、SDP 交换，返回已完成 answer 的 pc"""
@@ -46,14 +73,14 @@ class RTCManager:
         pc = RTCPeerConnection(
             configuration=RTCConfiguration(iceServers=ice_servers)
         )
-        self.pcs.add(pc)
+        self._track_pc(pc, sessionid)
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
             logger.info("Connection state is %s", pc.connectionState)
             if pc.connectionState in ("failed", "closed"):
                 await pc.close()
-                self.pcs.discard(pc)
+                self._forget_pc(pc)
                 session_manager.remove_session(sessionid)
 
         # 添加发送轨道
@@ -108,6 +135,14 @@ class RTCManager:
         except MaxSessionError as e:
             logger.warning("Rejecting offer: %s", e)
             return web.Response(
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": str(e)}),
+            )
+        except SessionKilledError as e:
+            # An admin killed it from the console while the model was loading.
+            logger.warning("Offer aborted: %s", e)
+            return web.Response(
+                status=503,
                 content_type="application/json",
                 text=json.dumps({"code": -1, "msg": str(e)}),
             )
@@ -169,6 +204,9 @@ class RTCManager:
                 content_type="text/plain",
                 text=str(e),
             )
+        except SessionKilledError as e:
+            logger.warning("WHEP aborted: %s", e)
+            return web.Response(status=503, content_type="text/plain", text=str(e))
         except Exception as e:
             logger.exception("whep failed")
             return web.Response(
@@ -196,14 +234,14 @@ class RTCManager:
         avatar_session = session_manager.get_session(sessionid)
 
         pc = RTCPeerConnection()
-        self.pcs.add(pc)
+        self._track_pc(pc, sessionid)
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
             logger.info("Connection state is %s", pc.connectionState)
             if pc.connectionState == "failed":
                 await pc.close()
-                self.pcs.discard(pc)
+                self._forget_pc(pc)
 
         from server.webrtc import HumanPlayer
         player = HumanPlayer(avatar_session)
@@ -225,3 +263,4 @@ class RTCManager:
         coros = [pc.close() for pc in self.pcs]
         await asyncio.gather(*coros)
         self.pcs.clear()
+        self.pc_by_session.clear()
