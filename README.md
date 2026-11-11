@@ -199,8 +199,7 @@ Two numbers in the server log decide whether a session is live: `inferfps`
 Stream compression costs CPU and inference costs GPU, so idle sessions scale with
 CPU and speaking sessions with GPU. Raise `batch_size` only while `inferfps`
 stays above the threshold — on an M2 Air in fp16 we measured `bs8=22.5 fps`,
-`bs16=17.7 fps`, `bs32=14.0 fps`, which is why the default is 8. Reproduce with
-`benchmark_batchsize.py`.
+`bs16=17.7 fps`, `bs32=14.0 fps`, which is why the default is 8.
 
 ---
 
