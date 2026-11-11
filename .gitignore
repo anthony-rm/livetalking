@@ -38,7 +38,6 @@ venv/
 
 # Local planning / working notes (agent scratch, not part of the product)
 PLAN.md
-PLAN_LATENTSYNC_1.5.md
 tasks/
 
 # Notebook / editor scratch
