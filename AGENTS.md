@@ -1,22 +1,24 @@
 # AGENTS.md — working rules for this repo
 
 LiveTalking: a Flask/aiohttp real-time digital-human server (TTS → ASR features →
-avatar inference → WebRTC/RTMP/virtualcam). Two processes may exist: the local
-host (this machine, MPS/CPU) and a remote CUDA box reached over SSH/gRPC.
+avatar inference → WebRTC/RTMP/virtualcam). One process, one GPU: the app runs on
+the machine that does the avatar inference. A browser reaches it from elsewhere
+over an SSH tunnel (`ssh -L 8010:127.0.0.1:8010`), so the app's port can stay
+bound to loopback.
+
+There is no remote worker, no gRPC transport and no deploy pipeline. Those
+existed to split the app from a second CUDA box; that split is gone.
 
 ## Hard invariants
 
-1. **Never connect to the remote CUDA box yourself.** Do not SSH into it, do not
-   run commands on it, do not open interactive sessions. Ask the user to run any
-   command and paste the output back.
-2. **Never install, upgrade, or modify anything on the remote box** — no
-   `pip install`, no `conda` changes, no edits to its config, env files, scripts,
-   or weights. You may only *use* its compute, and only through commands the user
-   chooses to execute.
-3. Write code, scripts and docs locally; hand the user exact copy-paste commands
-   for anything that must run on the remote host.
-4. Never commit secrets. `.env`, keychain credentials and `data/remote_worker.json`
-   stay out of commits.
+1. **Never commit secrets.** `.env`, keychain credentials and anything under
+   `data/` that holds a login stay out of commits.
+2. **GPU work is local and unconditional.** Avatar inference, avatar generation
+   and video enhance run in this process. Do not reintroduce a mode toggle, a
+   worker address, or a "where should this run" branch: there is one answer.
+3. **The serving port must not be exposed to the network.** `app.py` binds
+   `0.0.0.0` today; when running on a shared or firewalled host, bind loopback
+   and tunnel in. Never add a firewall rule for the app port.
 
 ## Run / test
 
@@ -25,44 +27,35 @@ host (this machine, MPS/CPU) and a remote CUDA box reached over SSH/gRPC.
   different venv without torch/cv2. `LT_PYTHON` overrides the interpreter path.
 - Restart with `./restart.sh`; run it backgrounded, then poll
   `curl http://localhost:<port>/api/model/status`.
-- GPU work is off by default: `config.yaml` ships `worker_mode: local`, so
-  avatar inference, avatar generation and enhance all run on this machine. The
-  single switch for all three is `/admin.html` → Remote GPU Worker → mode
-  (`POST /api/remote/mode`), or `--worker_mode remote` / `LT_WORKER_MODE=remote`.
-  Saving a worker address alone does NOT enable it — `remote_active()` is the
-  only gate. In remote mode TTS, ASR features, paste-back and streaming still
-  stay local.
-- Ship local changes to the box with `./deploy.sh` (`--dry-run` is strictly
-  local; `--rollback`, `--avatars`, `--setup-key`, `--force`). The deploy is for
-  the USER to run — an agent must not execute it against the box.
-- Connection is SSH-ONLY: the worker binds `127.0.0.1` on the box and the host
-  reaches it via `ssh -L` (`remote/tunnel.py`, supervised at startup). Never
-  reintroduce `--host 0.0.0.0` as a default, never add a firewall rule for 50051.
-  Box install steps: `docs/remote-gpu-setup.md`.
 - Tests: `pytest tests/` with the same pinned interpreter. Some suites
-  (`firefox_check.py`, `webrtc_smoke.py`, `smoke_test.py`) are live-server checks,
-  not unit tests. `tests/test_deploy_*.py` run against a fake box and touch no
-  network.
+  (`firefox_check.py`, `webrtc_smoke.py`, `smoke_test.py`, `fps_probe.py`,
+  `media_check.py`, `admin_*_ui.py`, `kill_*_live.py`, `firefox_mdns_pref.py`)
+  are live-server or live-browser checks, not unit tests — pass `--ignore=` for
+  each, or pytest will block waiting on a server that is not running.
+  `tests/test_audio_pacing.py` asserts a 50 Hz delivery rate and fails on a
+  loaded machine; treat its failures as flaky, not regressions.
+- On WSL2, `nvidia-smi` lives at `/usr/lib/wsl/lib/nvidia-smi` and is not on the
+  non-interactive PATH; `LD_LIBRARY_PATH` must include `/usr/lib/wsl/lib` or
+  torch reports `cuda.is_available() == False` with no other symptom.
 
 ## Map
 
 - `app.py` — server, session creation, model lifecycle (`model_state`,
-  `ensure_model_loaded`, `unload_model`, `restart_app`); `_avatar_modules` dict
-  maps `--model` to its module.
+  `ensure_model_loaded`, `unload_model`, `restart_app`); `_AVATAR_MODULES` maps
+  `--model` to its module.
 - `registry.py` — `@register(category, name)` / `create(...)`; categories
   `stt, llm, tts, avatar, output`.
 - `avatars/base_avatar.py` — `BaseAvatar` pipeline (TTS thread, ASR worker,
   inference thread, frame processor). Subclasses implement `inference_batch`,
-  `paste_back_frame`, optional `get_avatar_length`.
+  `paste_back_frame`, optional `get_avatar_length`. `paste_back_frame` is the
+  narrowest per-frame override point and the right seam for any change to how a
+  rendered frame reaches the output.
 - `avatars/<name>_avatar.py` + `avatars/<name>/genavatar.py` — per-backend model
   and video→artifact boundary.
 - `server/routes.py`, `server/avatar_routes.py`, `server/enhance_routes.py` —
   HTTP API; pages in `web/` (single English UI, no `-en` twins).
-- `remote/` — gRPC worker (`remote/worker.py`, runs on the CUDA box),
-  sync client (`remote/client.py`), address resolution (`remote/settings.py`).
 - `tools/enhance/` — RVM matting + Real-ESRGAN + GFPGAN base-video pipeline.
-- `docs/` — `remote-gpu.md` (deployment), `avatar-studio.md`, `api.md`,
-  `admin_api.md`, `virtualcam_guide.md`.
+- `docs/` — `avatar-studio.md`, `api.md`, `admin_api.md`, `virtualcam_guide.md`.
 
 ## Conventions
 
