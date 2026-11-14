@@ -1,5 +1,7 @@
 import time
 import asyncio
+import os
+import socket
 import numpy as np
 import resampy
 import soundfile as sf
@@ -9,6 +11,36 @@ from io import BytesIO
 from utils.logger import logger
 from .base_tts import BaseTTS, State
 from registry import register
+
+
+# The GPU box has no DNS (its /etc/resolv.conf is root-only and the network
+# blocks resolution), so edge-tts cannot resolve speech.platform.bing.com even
+# though the endpoint itself is reachable. Pin the IP when DNS fails: the
+# connection still carries the correct TLS SNI/certificate, so it is the
+# ordinary secure path with only name resolution bypassed.
+_EDGE_TTS_HOST = "speech.platform.bing.com"
+_EDGE_TTS_FALLBACK_IP = os.environ.get("EDGE_TTS_FALLBACK_IP", "150.171.28.10")
+
+
+def _install_dns_fallback(host=_EDGE_TTS_HOST, ip=_EDGE_TTS_FALLBACK_IP):
+    """Resolve `host` to `ip` inside this process when the resolver fails."""
+    try:
+        socket.getaddrinfo(host, None)
+        return False
+    except socket.gaierror:
+        pass
+
+    original = socket.getaddrinfo
+
+    def patched(name, port, *args, **kwargs):
+        if name == host:
+            return original(ip, port, *args, **kwargs)
+        return original(name, port, *args, **kwargs)
+
+    socket.getaddrinfo = patched
+    logger.warning("edge-tts: DNS unavailable, pinning %s -> %s", host, ip)
+    return True
+
 
 @register("tts", "edgetts")
 class EdgeTTS(BaseTTS):
@@ -60,6 +92,7 @@ class EdgeTTS(BaseTTS):
     
     async def __main(self,voicename: str, text: str):
         try:
+            _install_dns_fallback()
             communicate = edge_tts.Communicate(text, voicename)
 
             #with open(OUTPUT_FILE, "wb") as file:
