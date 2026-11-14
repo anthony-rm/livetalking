@@ -297,12 +297,14 @@ run the suite; ship to box; visual check.
 
 ## NEXT SESSION TASKS (in order)
 
-1. **Reconnect** — box was UNREACHABLE at stop (SSH timeout, school network or
-   teacher reboot). Tunnel 127.0.0.1:8010 also dead (it was process 50636).
-   Restart with `ssh -N -p 2222 -L 8010:127.0.0.1:8010 ecpkn_bac@10.130.104.166`
-   after checking `ssh -p 2222 ... uptime`; if the box rebooted, /tmp logs and
-   probes are GONE (persisted: ~/ditto-weights engines, ~/livetalking_box,
-   ~/ditto-probe). /tmp/wired_test.py etc. need re-upload from Mac scratch.
+1. **Reconnect** — box is ONLY reachable from the school WiFi (BUAA-Mobile
+   LAN); it went dark at stop because the user switched to 5G (not a reboot).
+   From off-campus: SSH, the tunnel and streaming CANNOT work at all — check
+   `ssh -p 2222 ... uptime` FIRST when on campus; if the box rebooted, /tmp
+   logs and probes are GONE (persisted: ~/ditto-weights engines,
+   ~/livetalking_box, ~/ditto-probe). /tmp/wired_test.py etc. need re-upload
+   from Mac scratch. Restart the tunnel with
+   `ssh -N -p 2222 -L 8010:127.0.0.1:8010 ecpkn_bac@10.130.104.166`.
 2. **Ship + verify the blue-face fix** (in the uncommitted diff): confirm the
    RGB/BGR conventions per backend, run the offline wired probe, screenshot a
    frame, ship `avatars/ditto_avatar.py`, restart server, human check.
