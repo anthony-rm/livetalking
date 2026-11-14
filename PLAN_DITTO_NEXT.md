@@ -84,12 +84,14 @@ Files in repo (all committed locally, not pushed):
   upstream wants real eye_open/eye_ball from registration instead; if the
   render looks dead-eyed, regenerate artifact WITH eye state and load it).
 
-### 3. End-to-end server test with WebRTC
-- Start server: `cd ~/livetalking_box && LT_PYTHON=... ./run.sh --transport
-  webrtc --model ditto --avatar_id ditto_test1` (binds 127.0.0.1:8010).
-- Run /tmp/phase1_gate.py (already on box, SECONDS=45 env) with AVATAR=ditto_test1.
-- Report client_fps + server `actual avg final fps` lines. NOTE: infer fps
-  counter is buggy upstream (millions), ignore it; use final fps + client fps.
+### 3. End-to-end server test with WebRTC — DONE 2026-11-14
+- Gate `/tmp/phase1_gate.py` run against the live server (`AVATAR=ditto_test1`,
+  `SECONDS=45`, all three TRT-10 lanes): `/offer` → 200 in 4.8 s, 39 audio feeds,
+  session streamed the full window. **Server `actual avg final fps`: 11.6–11.8
+  steady (9.6 first chunk, warm-up).** The client counter printed 50.02 — that is
+  the aiortc audio-track 50 Hz clock, not video fps; the millions-scale `infer
+  fps` is the known upstream bug. 11.6-11.8 fps is the real streaming number
+  (13.6 fps is the offline-probe ceiling).
 
 ### 4. TRT acceleration (the big lever, user explicitly wants it)
 
@@ -187,7 +189,14 @@ STATUS 2026-11-14 late: **decoder + warp BOTH on TRT 10, end-to-end measured.**
   call; upstream warps one frame at a time — batching 10 needs dynamic batch
   ONNX export, that's the engine-build path).
 
-### 6. Cleanup before commit (repo hygiene, do at session end)
+### 6. Cleanup before commit — DONE 2026-11-14 ( pushed as 4 commits to origin/main)
+- 272876b refactor: delete the remote GPU worker split (44 files, −9873 lines)
+- d324a49 feat: add the Ditto avatar backend (17 files, +1773)
+- abb9516 docs: AGENTS.md — one process, one GPU
+- b3150af docs: Ditto plan (this file) + install/downloader/split scripts
+- Suite green before push (102 passed, live-server/flaky files excluded);
+  push verified: remote/ absent from origin/main, ditto files present.
+  Original commit strategy (kept for the record):
 - `git status`: many modified files (AGENTS.md, PLAN_DITTO.md, README.md,
   app.py, base_avatar.py, detect.py, musetalk_avatar.py, config.py/yaml,
   docs, deleted remote/...). The remote-worker deletion (Phase 3 of the OLD
