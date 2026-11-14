@@ -1,291 +1,718 @@
-# Idea: Ditto as a `--model ditto` backend (quality upgrade: emotions, facial gestures, video reference)
+# Plan: Ditto, fresh architecture on the GPU box
 
-Status: **idea / not started.** Plan only — nothing implemented, nothing run on
-the GPU (per `AGENTS.md`, GPU work is user-run).
+Status: **plan only. Nothing installed, nothing run on the box.**
+Per `AGENTS.md` every box command below is for the USER to run.
 
-Target: add [Ditto](https://github.com/antgroup/ditto-talkinghead)
-(arXiv 2411.19509, ACM MM 2025, Apache-2.0) as an avatar backend next to
-`wav2lip` / `musetalk` / `ultralight`, for **emotion and expression synthesis on
-a small GPU (RTX 3060 Ti, 8 GB)**.
-
-Everything below was verified against the upstream `main` branch (cloned and
-read) and the `digital-avatar/ditto-talkinghead` HuggingFace repo.
+Immediate deliverable (Phase 0): **Ditto running standalone on the box**,
+producing an mp4 from `example/audio.wav`. Not integrated, not wired into the app.
 
 ---
 
-## 0. Verdict up front
+## 0. Verdict
 
-Ditto fits this repo unusually well, better than any diffusion option looked at
-so far, for four verified reasons:
+Install Ditto on the box as a **local** backend of the LiveTalking server that
+runs **on the box itself**. No remote worker, no gRPC, no transport split, no
+second venv.
 
-1. **Upstream is ALREADY a threaded queue pipeline shaped like `BaseAvatar`.**
-   `stream_pipeline_online.py` runs six worker threads over bounded queues:
-   `audio2motion → motion_stitch → warp_f3d → decode_f3d → putback → writer`
-   (`StreamSDK`, queue maxsize 100, `stop_event`, per-worker exception capture —
-   the same pattern `avatars/base_avatar.py` implements, including the
-   fail-one-thread-tear-all-down rule). This is not a research script to port;
-   it is a runtime to *disassemble and merge*.
-2. **Video reference is native.** `avatar_registrar` accepts an image
-   **or a video**, extracts per-frame identity/motion info
-   (`x_s_info_lst`, `f_s_lst`, `M_c2o_lst`), and *smooths it over the source
-   frames* (`smo_k_s=13`). With a video source, `is_image_flag=False` and
-   motion is applied **relative to the source video's own head motion**
-   (stitch: `relative_d`, `eye_f0_mode` for video, `drive_eye` per-frame),
-   cropped out, rendered, and pasted back into the ORIGINAL frame via
-   `M_c2o` affine warp + mask blend — i.e. exactly the MuscTalk paste-back
-   pattern (base video keeps body/scene/camera; audio drives brows, mouth,
-   expression). This is the "video as reference" requirement, supported
-   directly.
-3. **Emotion/control is a designed feature, not a side effect.** The condition
-   handler carries `emo` (an emotion class id, default 4), eye-open and eyeball
-   conditioning from the source (`ch_info`), and per-frame `ctrl_info` knobs
-   (delta pitch/yaw/roll, fade alpha, eye-open deltas) — map these to a
-   server-side "emotion" API knob.
-4. **Small models, three interchangeable runtimes.** `core/utils/load_model.py`
-   dispatches on file extension: `.pth` → PyTorch, `.onnx` → onnxruntime,
-   `.engine` → TensorRT. The PyTorch set is ~2 GB (lmdm 191 MB + warp 182 MB +
-   decoder 222 MB + appearance/motion extractors ~0.5 GB + aux onnx landmarks +
-   HuBERT ~1.5 GB); upstream ships prebuilt **`ditto_trt_Ampere_Plus` fp16
-   engines** (a 3060 Ti *is* Ampere), so the fast path needs no engine build.
+That is now the simple option rather than the ambitious one, because the app and
+Ditto resolve as **one dependency set** (§2). The whole remote layer exists to
+move numbers between two machines that no longer need to be two machines, so
+removing it is a net simplification, not a rewrite.
 
-The one number to keep honest: **first-frame delay ≈ 2.8–3 s** (see §3), after
-which the pipeline is bounded-pass streaming. Fine for a talking-avatar
-server; must be stated in the UI.
+Browser access is solved by carrying the stream over SSH, not by exposing the
+box. Two shapes are available (§7.4): **render on the box** and forward its own
+web UI with `ssh -L 8010:127.0.0.1:8010` (default, 1.0 Mb/s measured), or
+**render in the browser** from a 252-byte-per-frame motion payload (Phase 5).
+The firewall forces this: it drops everything but tcp/2222 and all UDP (§3.3),
+so direct WebRTC from the Mac to the box cannot work whatever we design.
+
+Correction to the earlier version of this section: it claimed "media never
+crosses the network" because there was one machine. That holds only if you sit
+at the box. If you render on the box and watch from the Mac, ~1.0 Mb/s of video
+*does* cross — which the measured link carries comfortably, and which §7.3 sizes
+rather than assumes.
 
 ---
 
-## 1. What the model actually is (verified, with the numbers that matter)
+## 1. What changed since the previous plan
 
-| Item | Value (read from source) |
+The previous version of this file assumed a Mac host driving a remote CUDA
+worker over a stateful session RPC, with a second venv, a 512² JPEG reply budget
+of ~1 MB/s, and a 2.8 s time-to-first-frame. Four of those premises were wrong:
+
+| Premise | Was | Verified now |
+|---|---|---|
+| Box | RTX 3060 Ti, 8 GB, deps pre-installed | **RTX 3060, 12 GB**, 12 cores, 15 GB RAM, 953 GB free, **nothing installed** |
+| Address | 10.130.105.203, ssh :22 | **10.130.104.166, ssh :2222** (`:22` is a *different* Windows host) |
+| Latency | 2.8 s (`overlap_v2=10`, 50 steps) | **0.8 s floor** (`overlap_v2=70`, 10 steps) — §4 |
+| Env | Ditto cannot share the app env | **It can** — 117 packages resolve together, §2 |
+| Transport | 512² JPEG over SSH ≈ 1 MB/s | **Sized properly in §7.3:** 1.0 Mb/s real, 34 Mb/s only on synthetic noise |
+
+The 12 GB card removes the VRAM risk that drove a whole render-size/TRT
+mitigation ladder. The one-env result removes the reason for gRPC at all.
+
+---
+
+## 2. The finding that decides the architecture
+
+One pip resolver run over the app's own requirements **plus** Ditto's, targeting
+linux wheels:
+
+```
+numpy==1.26.4  mediapipe==0.10.21  onnxruntime-gpu==1.23.2
+opencv-python-headless==4.10.0.84  scipy==1.15.0  librosa==0.10.2.post1
+scikit-image==0.25.0  imageio==2.36.1  einops==0.8.1  filetype==1.2.0
+Cython==3.0.11  soundfile==0.12.1  transformers<5  pyyaml  flask  aiortc
+diffusers  accelerate  edge_tts  openai  dashscope  keyring  paramiko  resampy
+```
+
+→ **117 packages, no conflict, on py3.10 and py3.12 alike.**
+
+The constraint that shapes everything: **`mediapipe` requires `numpy<2`**, so the
+review env pins `numpy==1.26.4`. That is safe — the app contains no numpy-2-only
+API (checked: no removed aliases, no `np.string_`), and both torch 2.5.1 and the
+existing 2.14 accept 1.26.
+
+Consequences, all of which delete work:
+
+- **No second venv.** No sidecar, no second SSH forward, no divergent
+  requirements file to keep in sync.
+- **No proto change.** No `DittoStart/Push/Stop`, no `capabilities` negotiation,
+  no session-state RPC.
+- **No `DittoBackend` wrapper** mirroring upstream's threaded pipeline across a
+  network hop. Ditto's components are called directly, in-process.
+- **No frame transport.** Paste-back reads the local frame list; the render never
+  leaves the process.
+
+`mediapipe` is the only genuinely new heavy dependency and it is unavoidable:
+`Source2Info.__call__` calls `_get_eye_info()` unconditionally, which imports
+`mediapipe` at module scope in `core/aux_models/modules/landmark478.py`.
+
+---
+
+## 3. Verified facts
+
+### 3.1 Box
+
+| Item | Value |
 |---|---|
-| License | Apache-2.0 code **and** checkpoint repo LICENSE. Caveat below (InsightFace) |
-| Paradigm | audio → **landmark motion diffusion (LMDM)** → LivePortrait-style warp+decode → paste back |
-| LMDM window | `seq_frames=80`, `overlap_v2=10` ⇒ every pass denoises an 80-frame window and emits **70 valid frames (2.8 s)**; windows overlap 10 frames with alpha blend (`fuse_alpha`) so there is no seam |
-| Sampling | `sampling_timesteps=50` default (settable in `setup`), cosine schedule |
-| Motion dim | 265 (=direction concat of scale/pitch/yaw/roll/t/exp/kp — LivePortrait motion space) |
-| Audio encoder | **HuBERT with streaming KV-cache** (`hubert_streaming_fix_kv.onnx`, 1.46 GB); online chunking `(past=3, cur=5, fut=2)` × 40 ms = feed it 0.405 s PCM, get **5 valid feature frames** per call |
-| Detector stack | InsightFace det + landmark106/203 (ONNX) + MediaPipe landmarker478 (`face_landmarker.task`) for eye state |
-| Paste-back | `PutBack`: affine-warp the 512² render into the source frame with a soft mask (Cython `blend.pyx`, `pyximport` auto-build at import; a pure-numpy `PutBackNumpy` twin exists as fallback) |
-| Envs tested | py3.10, `pytorch 2.5.1+cu121`, `tensorrt 8.6.1`, numpy 2.0.1, mediapipe (in conda file), A100 |
-| Sizes on HF | Full repo 6.93 GB only because it ships all THREE formats; usable subsets: PyTorch ≈ 2.4 GB, ONNX ≈ 3.5 GB, TRT ≈ 3.3 GB |
+| Host / GPU | `Carbon-Machine`, GeForce RTX 3060, **12288 MiB** |
+| Driver / CUDA | 560.94, CUDA 12.6 → cu124 wheels in range |
+| CPU / RAM / disk | 12 cores, 15 GB RAM, 953 GB free on `/` |
+| SSH | **port 2222**, `OpenSSH_10.2p1 Ubuntu-2ubuntu3.8` |
+| Conda | present (prompt is `(base)`); no `livetalking` env exists |
+| Installed for this task | **nothing** |
 
-Mirror-index idiom: upstream `Loader` uses the same `_mirror_index` as this
-repo's `utils/image.py:mirror_index` — source frames cycle identically.
+### 3.2 Model, per lane (summed from the HF manifest, `?blobs=true`)
 
----
+| Lane | Size | Notes |
+|---|---|---|
+| `ditto_pytorch` | **2.31 GB** | 1.46 GB of it is HuBERT onnx |
+| `ditto_trt_Ampere_Plus` | **2.08 GB** | fp16 engines, Ampere-compatible — a 3060 *is* Ampere |
+| `ditto_onnx` | 2.53 GB | general onnx; needs the TRT converter |
 
-## 2. Environment decision — the one real fork in the plan
+Pick **one** lane. Phase 0 uses `ditto_pytorch`.
 
-The repo conda env (py3.12, torch 2.14.1, numpy 2.5.4) vs Ditto pins
-(py3.10, torch 2.5.1, TRT 8.6.1, mediapipe, onnxruntime):
+### 3.3 Network (measured from the Mac, no login)
 
-- The Ditto models are plain small torch modules (`core/models/*.py`) — nothing
-  exotic; on torch 2.14 they will very likely load. numpy 2.x is already
-  upstream's own pin. **The PyTorch path can plausibly run in-process in the
-  main env**, needing only: `onnxruntime(-gpu)` (aux landmarks + HuBERT) and
-  `mediapipe` (landmark478) — both pure wheels, no compile.
-- TensorRT 8.6.1 must NOT go into the main env (heavy, pinned, and TRT10 is
-  incompatible with its plugin approach). The TRT engines are a **speed
-  upgrade**, not the entry ticket.
-
-Decision: **Phase 0 runs the vendored PyTorch path inside the main conda env on
-the 3060 Ti.** If fps is short, the TRT path goes to a second-venv sidecar on
-that machine (`avatars/ditto/serve.py` + a second `ssh -L` forward, same
-`remote/tunnel.py` supervisor discipline as the existing worker), OR stays
-in-process on the local GPU if the 3060 Ti is local. Do not build the sidecar
-before the in-process number exists.
-
-Mediapipe risk to check in Phase 0: protobuf version conflicts (the
-avatar-harness project had to *disable* MediaPipe over a protobuf clash).
-Mitigation: `landmark478_cfg` feeds only eye-open/eye-ball conditioning
-(`use_eye_open`/`use_eye_ball` cfg flags) — if mediapipe fights the env, set
-those flags off and lose blink-conditioning only, nothing structural.
-
----
-
-## 3. Streaming contract — the honest latency math
-
-From `stream_pipeline_online.py` (read line by line):
-
-- Audio arrives from TTS as 20 ms chunks (the repo's existing path). Feed
-  `wav2feat` every 5 chunks (0.1 s? no — chunksize `(3,5,2)`: slice step is
-  `chunksize[1]*640` = 3200 samples = **0.2 s**, slice length 6480 =
-  0.405 s) → each call yields 5 valid frames of HuBERT features, pushed into
-  Ditto's `audio2motion_queue`-equivalent.
-- The motion worker **waits until it has 70 fresh feature frames** before the
-  first LMDM pass ⇒ **first motion frame requires 2.8 s of audio** + one 50-step
-  LMDM pass (~measured in Phase 0; the model is 191 MB, the window is 80 frames —
-  expect low hundreds of ms on a 3060 Ti).
-- Steady state: every pass consumes 70 frames (2.8 s) of audio and emits 70
-  frames (2.8 s) of motion. **If one pass < 2.8 s wall clock, the pipeline is
-  sustainable real-time** with just the initial ~3 s delay. Warp/decode/stitch
-  are single-frame ops (LivePortrait class ≈ 12.8 ms/frame on a 4090, expect
-  ~35–45 ms on a 3060 Ti — tight but above 25 fps only if post stays lean; the
-  512² decode is the cost). Downstream workers are 1 frame deep, so they add
-  latency ≈ 3×(warp+decode+putback), not throughput loss, as long as each
-  thread keeps its own fps ≥ 25.
-- Warm-up buffer: upstream seeds the audio buffer with `overlap_v2*640` zeros;
-  replicate it verbatim or the first fuse is wrong.
-
-So: **time-to-first-frame ≈ 2.8 s + one pass ≈ 3.0–3.5 s**, then flat. This is
-a *delayed* real-time, not batch — no `tools/enhance` fallback mode needed.
-
----
-
-## 4. Proposed architecture (new / touched files)
-
-### New: vendor the runtime
-
-```
-avatars/ditto/                     # vendored from upstream core/ (Apache-2.0)
-  models/                          # lmdm, warp, decoder, extractors (pytorch)
-  aux_models/                      # insightface_det, landmark106/203, hubert_stream, mediapipe478
-  utils/                           # load_model, blend (pyx + numpy fallback), crop, get_mask
-  keep upstream license header
-```
-
-The `StreamSDK` thread skeleton is NOT vendored — it is replaced by
-`BaseAvatar`'s own four threads (TTS/ASR/inference/process), which already
-exist. Keep: `Audio2Motion`, `MotionStitch`, `WarpF3D`, `DecodeF3D`, `PutBack`,
-`AvatarRegistrar`, `ConditionHandler`, `Wav2Feat` as pure-callable classes
-(they already are — each has `setup()` + `__call__`), called from the merged
-plugin.
-
-### New modules
-
-| Path | Purpose |
+| Probe | Result |
 |---|---|
-| `avatars/ditto_avatar.py` | `@register("avatar", "ditto")` subclass of `BaseAvatar`. `inference_batch()` = drain PCM → `Wav2Feat` (every 0.2 s) → when ≥70 valid features, one LMDM pass → `stitch → warp → decode` per frame into `res_frame_queue`. `paste_back_frame` = Ditto `PutBack` (affine `M_c2o` + mask blend) OR the classic bbox paste — pick in Phase 3 and delete the loser. Silence path = `frame_list_cycle[idx]`, unchanged |
-| `avatars/ditto/genavatar.py` | video → run `AvatarRegistrar` ONCE, store the artifact (§5). No VAE latents, no per-frame parsing; the extractor set runs once per frame (~fast, MPS-safe? check — Phase 0 can run genavatar against a CPU path) |
-| `scripts/download_ditto_weights.py` | HF `digital-avatar/ditto-talkinghead`: fetch ONLY `ditto_pytorch/` + `ditto_cfg/v0.4_hubert_cfg_pytorch.pkl` (~2.4 GB), resumable, `models/ditto/`. TRT engines behind a `--trt` flag (~3.3 GB more) |
-| `docs/ditto.md` | latency contract (§3), knobs, mediapipe/insightface caveats, measured fps table |
-| `tests/test_ditto_artifact.py` | artifact write → `detect_backend` round-trip; musetalk/wav2lip unaffected |
-| `tests/test_ditto_window.py` | window/fuse state machine against a fake LMDM: 70-frame emission, 10-frame fused overlap, seeding zeros, no drift over 60 s, barge-in discard |
-| `tests/test_ditto_pasteback.py` | M_c2o warp+blend == `PutBackNumpy` reference |
+| tcp/2222 | OPEN, 21 ms, Ubuntu sshd banner |
+| tcp/22 | OPEN — **wrong machine** (`OpenSSH_for_Windows_9.5`) |
+| tcp/8010, 8000, 443, 80, 50051, 3478, 1935, 5900 | timeout |
+| tcp/31337 (unused control) | **timeout** ⇒ firewall is default-**drop** |
+| UDP 9999, 2222 | no ICMP unreachable ⇒ UDP filtered |
+| handshake latency | median 18.6 ms, **σ 24.5 ms**, max 97 ms |
 
-### Touched
+The unused-port control is the load-bearing row: a port with nothing listening
+also times out, so every timeout above is a firewall block, not a missing
+service. `8010` stays unreachable even once the app runs.
 
-| Path | Change |
-|---|---|
-| `app.py` | `_AVATAR_MODULES['ditto']`; `_load_backend_weights` branch (load model set, no sidecar); `_warm_up_for` entry (empty first pass on silence audio) |
-| `avatars/detect.py` | rule BEFORE wav2lip (shares `face_imgs`-like full frames): `ditto.json` present → `ditto`; update `KNOWN_BACKENDS` + the module docstring's layout table |
-| `config.py` | `--model` help; `--ditto_emo` (0..N, default 4), `--ditto_ctrl_*` optional; nothing else — the knobs ride `AVATAR_GENERATORS` params |
-| `server/avatar_routes.py` | `AVATAR_GENERATORS["ditto"]` with params: `crop_scale` (default 2.3), `crop_vy_ratio` (-0.125), `smo_k_s` (13), `sampling_timesteps` (50) |
-| `requirements.txt` | `onnxruntime-gpu`, `mediapipe` — ONLY after the Phase-0 env probe; nothing else |
-| `server/routes.py`, `web/admin.html` | expose ditto in model list + "emotion: N" display (config surfaces through existing endpoints) |
-| `remote/worker.py` `_BACKENDS` | **defer.** Add only if/when fps on the 3060 Ti is insufficient and TRT sidecar is built; then mirror the pytorch inference math inside a `DittoBackend` like `MuseTalkBackend` |
-| `docs/remote-gpu.md`, `MODELS.md` | attribution + the InsightFace caveat |
+Also confirmed: the Mac's proxy is **not** in the path to the box (no host-scoped
+route to 10.130/16; traffic leaves via `en0` → `10.137.0.1`), so these are real
+link numbers.
 
----
+### 3.4 Configs (read out of the shipped pkl files)
 
-## 5. Avatar artifact format
+| Config | `seq_frames` | `overlap_v2` | `valid_clip_len` | steps | `online_mode` |
+|---|---|---|---|---|---|
+| `v0.4_hubert_cfg_pytorch.pkl` | 80 | 10 | 70 | 50 | **False** |
+| `v0.4_hubert_cfg_trt.pkl` | 80 | 10 | 70 | 50 | False |
+| `v0.4_hubert_cfg_trt_online.pkl` | 80 | **70** | **10** | **10** | **True** |
 
-`AvatarRegistrar(source_video)` output, pickled once at genavatar time
-(one-time cost, seconds-to-minutes, then inference is pure):
-
-```
-data/avatars/<id>/
-  ditto.json          # {version, sampling_timesteps, crop_scale, ...}
-  full_imgs/          # RGB frames (paste-back + silence path) — SAME as musetalk keeps
-  ditto_source.pt     # device-ported pickle:
-                      #   x_s_info_lst (list, per frame: scale/pitch/yaw/roll/t/exp/kp)
-                      #   f_s_lst  (appearance features per frame)
-                      #   M_c2o_lst (crop-to-original affine per frame)
-                      #   eye_open_lst / eye_ball_lst (mediapipe; may be empty)
-```
-
-Conventions this MUST respect (repo rules from the skill):
-- **Device portability**: write every tensor through `t.detach().cpu()` (the
-  `latents.pt` CUDA/MPS lesson — `tests/test_latents_device.py` pattern), and
-  `torch.load(..., map_location=...)` in the loader. Hard requirement, test it.
-- `get_avatar_length()` = `len(full_imgs)`; frame pick via
-  `utils/image.mirror_index` (upstream's `_mirror_index` is identical, so
-  index math already agrees with `process_frames`/silence behavior).
-- Loud `RuntimeError` on mismatch, like the other `load_avatar`s.
-- Rough size: LivePortrait appearance features are ≈ N × C×H×W floats
-  (256×64×64 → ~4 MB fp32/frame) — for a 75-frame base clip ≈ 300 MB fp32,
-  ~150 MB if stored fp16 (safe: features feed convs, but verify; consider
-  storing only every-K-th frame and interpolating `x_s_info` upstream-style via
-  `smo_k_s` — upstream itself smooths over temporally-adjacent infos).
-  **Measure in Phase 3 and shrink if large**; `f_s` dominates, `M_c2o` is
-  trivial.
-
-Supports both image-driven avatars (single `full_imgs` frame, ditto invents
-motion — musetalk cannot do this) and video-driven ones (per-frame x_s +
-relative motion — the quality path for "emotions with a video reference").
+`valid_clip_len = seq_frames - overlap_v2`. Nothing else differs materially.
 
 ---
 
-## 6. Phased plan
+## 4. Latency and throughput, derived from source
 
-| Phase | Work | Gate | Est. |
+Written out because this is the whole risk, and because two earlier quotes in
+this repo's history were wrong.
+
+### 4.1 The window machine
+
+`Audio2Motion.__call__` runs the LMDM over a `(1, 80, 265)` sequence, fuses the
+last `fuse_length` frames of the previous result into the new one, and emits
+`valid_clip_len` new frames. `StreamSDK._audio2motion_worker` will not start a
+pass until `valid_clip_len` **new** feature frames have accumulated.
+
+So **frames emitted per pass = `80 - overlap_v2`**:
+
+- `overlap_v2=70` ⇒ 10 frames/pass ⇒ **2.5 passes/s**, 0.8 s lookahead.
+- `overlap_v2=10` ⇒ 70 frames/pass ⇒ **0.36 passes/s**, 2.8 s lookahead.
+
+Higher `overlap_v2` = **lower latency, more compute**. It is the single dial.
+
+### 4.2 Compute cost, in units comparable across configs
+
+Cost per second of audio = `passes_per_second × steps`:
+
+| Config | passes/s | steps | DiT forwards/s |
 |---|---|---|---|
-| **0 — env + hot-path probe (user-run on the 3060 Ti)** | `pip install onnxruntime-gpu mediapipe` into the conda env; clone upstream in a scratch dir; run `inference.py` (pytorch cfg, offline pkl) on the stock example; then run a 20 s wav and time: one LMDM pass, warp+decode+putback per frame, peak VRAM. Report `nvidia-smi` peak too | In-process pytorch works in the app interpreter + the fps table. FAIL case → TRT sidecar branch (adds ~3 d) | 0.5 d |
-| **1 — vendor + load** | copy `core/`, strip StreamSDK threads, `load_model()`-equivalent calls; unit-load all models in a probe; numpy fallback for `blend_images_cy` active by default, pyx when it builds | `./run.sh --model ditto` boots to "weights loaded" (lazy, no avatar yet); no import break in existing backends (full pytest) | 1 d |
-| **2 — artifact + detection** | `genavatar.py` (video→`ditto_source.pt`+`full_imgs`+`ditto.json`), `detect.py` rule ordered first, `AVATAR_GENERATORS` entry, downloader script | `POST /api/avatars` builds one; `GET /api/avatars` lists it; detection tests green; device-portability test green (write on CUDA path if available, else MPS) | 1 d |
-| **3 — inference merge** | `ditto_avatar.py`: PCM→`Wav2Feat` (0.2 s cadence) into a feature ring buffer; ≥70-frame gate → LMDM pass → stitch/warp/decode per frame → queue; silence path; warm-up (`fix_kp_cond`, seeding zeros, `set_Nd`); `paste_back_frame` vs `PutBack` comparison | `tests/test_ditto_window.py` green on a fake LMDM; live session streams, `inferfps` logged | 2 d |
-| **4 — quality + knobs** | emo id + `ctrl_info` surfaced (`--ditto_emo`, per-request param); `sampling_timesteps` 50 → try 25; asset-size shrink if `f_s` storage > ~500 MB; barge-in/interrupt discards pending pass | Side-by-side vs musetalk on same avatar (lip-sync, brows, blink); measured fps ≥ 25 sustained | 1 d |
-| **5 — docs + remote (optional)** | `docs/ditto.md`; if 3060 Ti is that box AND fps short: TRT engines + sidecar per FlashHead plan; worker `_BACKENDS` entry | Admin card shows measured fps; unload frees VRAM (`nvidia-smi` user-checked) | 1 d |
+| online (`ov=70`, 10 steps) | 2.5 | 10 | **25.0** |
+| offline (`ov=10`, 50 steps) | 0.357 | 50 | **17.9** |
 
-**~6 days** with the pytorch path, +2–3 if the TRT sidecar becomes necessary.
-Existing backends untouched throughout (registry isolation, per repo rules).
+The online cfg needs **1.4×** the LMDM throughput in exchange for 3.5× lower
+latency. Good trade, if the card can do it.
 
-First milestone worth seeing: end of Phase 3, a 60 s session where the first
-~3 s shows the silence frames, then expression+lip motion with no drift.
+### 4.3 Time to first frame — the correction
+
+The seed is `overlap_v2 × 640` samples of zeros → 70 feature frames. The first
+pass consumes 10 and produces **no output** (it only latches
+`res_kp_seq_valid_start` and `d0`). Only a full 80-frame window from the new
+`local_idx` emits frames, i.e. two passes:
+
+```
+0.8 s of audio (70 seed + 10 + 10) + 2 LMDM passes + warp/decode of 10 frames
+```
+
+⇒ **TTFF ≈ 1.0–1.5 s**, of which **0.8 s is a hard floor** from the seed length.
+Earlier statements of 0.4 s and of 2.8 s were both wrong; this derivation is the
+one to check Phase 0 against.
+
+### 4.4 The gate
+
+Steady state needs one pass to finish in ≤ `valid_clip_len / 25` = **400 ms** to
+hold 25 fps. Directive: **if a pass exceeds 400 ms, lower `overlap_v2`** — each
+halving roughly halves the pass rate, at the cost of proportionally more latency.
+
+### 4.5 The fixed cost
+
+Per frame at 512²: `WarpF3D` + `DecodeF3D`. LivePortrait's cost class, independent
+of LMDM tuning. 25 fps means 40 ms/frame for both together. That, not the LMDM,
+is the likelier thing to bind on a 3060. **Phase 0 measures it separately.**
 
 ---
 
-## 7. Risks / open questions
+## 5. Cython: avoid it rather than build it
 
-- **First-frame delay ≈ 3 s is structural** (70-frame valid window × 40 ms).
-  UI must show a "connecting/warming" state; the pacing audio thread already
-  exists for audio, so video silence frames cover it — but state it in
-  `docs/ditto.md`, don't hide it.
-- **The 3060 Ti fps is the one unknown.** LMDM is small, but warp/decode at 512²
-  are the LivePortrait cost class (~40 ms/frame on this silicon — plausible,
-  NOT measured); if decode is the bottleneck, the TRT fp16 decoder engine
-  (Ampere-ready, no build) is the fix, OR drop render to 256² (decoder supports
-  it — `crop_scale`/`max_size` are kwargs).
-- **`sampling_timesteps=50` per pass**, on an 80-frame window, every 2.8 s:
-  budget = one pass ≤ 2.8 s. Likely healthy margin; verify, and test 25 steps
-  for headroom.
-- **InsightFace license**: `det_10g.onnx`/landmark models are InsightFace
-  pretrained — their terms are non-commercial for the *models*. Same school-project-OK caveat as FlashHead weights; write it in `MODELS.md`.
-- **mediapipe protobuf clash** possible with the app env (`PROTO` pin issues
-  surface the moment mediapipe installs). Fallback: `use_eye_open=False,
-  use_eye_ball=False` (condition flags exist upstream) → lose blink
-  conditioning only. Decide in Phase 0, in-repo, before vendoring.
-- **One resident model** — the existing `_load_backend_weights` swap rule
-  covers it; ensure the pytorch ditto set frees cleanly on `unload_model`
-  (all modules held in one container object).
-- **f_s storage size** — measure §5's fp16/every-K compromise; a >1 GB artifact
-  per avatar is not acceptable next to musetalk's latents.
-- **In-process vs worker**: inference math merged locally first; only add a
-  worker `DittoBackend` (mirror `MuseTalkBackend.infer`) when a remote box
-  must serve it; the artifact's `f_s` then ships on `LoadAvatar` like latents do.
+`core/atomic_components/putback.py` imports `..utils.blend` at **module scope**,
+and `blend/__init__.py` calls `pyximport.install()` — so importing `PutBack`
+triggers a runtime Cython build (needs `gcc`) or fails. Its build config also
+imports `distutils`, removed in python 3.12.
 
-## 8. Acceptance criteria
+Upstream ships the numpy equivalent in the same file (`PutBackNumpy`, 25 lines:
+`warpAffine` the mask, `warpAffine` the render, lerp, clip, cast). Our backend
+uses a local copy and **never imports upstream's `putback.py`**.
 
-1. `--model ditto` + video-reference avatar connects, streams ≥25 fps for 60 s,
-   `inferfps`/`finalfps` logged, A/V aligned end to end.
-2. Time-to-first-frame measured and documented (expect ~3 s).
-3. Identical WAV driven through musetalk vs ditto: brows/blink/expressions
-   visibly richer on ditto; teeth/lip sharpness judged on OUR avatars, verdict
-   recorded in the PR.
-4. Emotion knob (`--ditto_emo`, per-avatar param) visibly changes expression.
-5. `pytest tests/` green incl. 3 new tests, no GPU on the CI machine.
-6. Existing backends: zero behavioral change (registry tests assert).
+Result: no Cython at runtime, no `gcc` dependency, no `distutils`; the hot path
+is 2 `warpAffine` + a lerp. Phase 0's *upstream* smoke test does need `gcc`
+(it imports the Cython path) — a test dependency, not a runtime one.
+
+---
+
+## 6. Target architecture
+
+```
+BOX (Carbon-Machine, RTX 3060 12GB, one conda env)
+────────────────────────────────────────────────────────────────
+  app.py  (Flask/aiohttp, ws://0.0.0.0:8010)
+    │  TTS ──► ASR features ──► avatar inference ──► streamout
+    │                                │
+    │                       avatars/ditto_avatar.py
+    │                                │
+    │            ┌───────────────────┴───────────────────┐
+    │            │  Ditto components, in-process:        │
+    │            │  AvatarRegistrar → ConditionHandler   │
+    │            │  → Wav2Feat(hubert) → Audio2Motion    │
+    │            │  → MotionStitch → WarpF3D             │
+    │            │  → DecodeF3D → paste_back (numpy)     │
+    │            └───────────────────────────────────────┘
+    │
+  browser (on the box, over the SSH tunnel)
+```
+
+Rules this shape enforces:
+
+- **One process, one env, one GPU.** No mode toggle, no address setting, no
+  capability negotiation — one place the model can run.
+- **Ditto is an ordinary `avatar` plugin.** Same `@register("avatar","ditto")`
+  contract as musetalk/wav2lip/ultralight, same `BaseAvatar` pipeline, same
+  lazy-load-on-first-connect lifecycle. Not a special case, not a sidecar.
+- **Artifacts follow the existing convention**: `data/avatars/<id>/`, detected by
+  `avatars/detect.py` from directory layout, failing loudly on mismatch.
+- **Model code lives in one vendored dir** (`avatars/ditto_deps/`, the upstream
+  `core/` tree at a pinned commit, gitignored). `requirements.txt` gains Ditto's
+  deps because it is one env now.
+
+---
+
+## 7. What gets deleted — and what replaces the transport
+
+Every path in the first table exists only to bridge two machines. The second
+table is the part the previous version of this plan got wrong: it said "there is
+one machine, so there is no transport", which stops being true the moment you
+want the box to do the rendering while the browser stays on your desk.
+
+### 7.1 The cleanup inventory (measured, not estimated)
+
+Counted with `wc -l` over the current tree. The repo is **29,346 lines of Python**.
+
+| Path | Lines | Why it goes |
+|---|---|---|
+| `remote/` (11 modules + proto + stubs) | **2,734** | gRPC worker, tunnel, keyinstall, settings, tensors |
+| `scripts/deploy_remote.py` | **1,332** | release/symlink/rsync orchestration |
+| `scripts/probe_remote_pipeline.py` | **208** | probe harness for the same |
+| `avatars/remote_avatar.py` | **327** | the remote plugin |
+| `tools/enhance/remote_enhance.py` | **103** | enhance-over-gRPC |
+| `tests/` (14 remote files + 2 fakes) | **2,618** | doubles for the above |
+| `deploy.sh` | 20 | entry point to the deploy script |
+| `docs/remote-gpu*.md`, remote sections of `docs/admin_api.md` | — | procedures for the deleted flow |
+| `config.yaml` / `config.py` remote keys | — | `worker_mode`, `remote_worker`, `remote_backend`, `--remote_*` |
+| `web/admin.html` remote card, `/api/remote/*`, `data/remote_worker.json` | — | its UI and settings |
+
+**≈7,350 lines, 25% of the Python tree.** The remote-touching code is not a leaf:
+`app.py`, `config.py`, `server/routes.py`, `server/task_manager.py`,
+`server/enhance_routes.py`, `web/admin.html` and `web/avatar.html` all reference
+it, so the deletion touches 7 more files that stay. That is the real cost, and
+it is why this is its own commit.
+
+Kept as *ideas*, not code: the `model_state` / `model_backend` lifecycle and the
+session-kill endpoints are good and are **local** concepts — they stay.
+
+Safety: this deletes working code, so it lands as its own commit with `git`
+history intact, **after** Ditto is proven on the box (Phase 3). Not a prerequisite
+for anything.
+
+### 7.2 The one thing worth salvaging: the patch, not the pipe
+
+The old layer had one genuinely good idea buried in it — `remote_avatar.py`
+subclasses `BaseAvatar` and overrides the *narrowest* method that needs a GPU.
+That is the correct seam and it survives. What was wrong was the payload: a
+**512² JPEG round-trip over SSH**, which is simultaneously the most expensive
+thing to send and the least information-dense.
+
+### 7.3 Payload sizing — measured on this machine
+
+The choice of *what* crosses the wire decides everything downstream. Measured
+with `cv2.imencode` on the repo's own interpreter:
+
+| Payload | Bytes/frame | @25 fps | Verdict |
+|---|---|---|---|
+| 512² RGB, **smooth face crop**, JPEG q80 | 5.1 KB | **1.0 Mb/s** | this is the honest "send pixels" number |
+| 512² RGB, JPEG q90 | 6.8 KB | 1.4 Mb/s | |
+| 1280² smooth (full canvas), JPEG q85 | 16.3 KB | 3.3 Mb/s | |
+| 512² **noise**, JPEG q80 | 171.1 KB | 34.2 Mb/s | the *worst case* that a synthetic benchmark would report |
+| **Ditto `kp`, 21×3 fp32** | **252 B** | **0.05 Mb/s** | ← the actual motion payload |
+| Ditto full `x_s_info`, 133 fp32 | 532 B | 0.11 Mb/s | everything the tail needs |
+
+Two things fall out, and they contradict what the old plan assumed:
+
+1. **Worst-case JPEG numbers are a trap.** A random-noise benchmark says 34–140
+   Mb/s and makes pixel transport look impossible; a real face crop is **1.0
+   Mb/s**. Any bandwidth argument here has to be made on realistic content, or it
+   argues itself into the wrong design.
+2. **The motion payload is ~20,000× smaller than the pixels** — 252 bytes vs
+   5.1 KB, per frame. Which means the right question is never "how do we get the
+   frames across", it is "how rarely can we afford to send them".
+
+### 7.4 Transport decision
+
+The box is reachable **only** on tcp/2222 (§3.3: every other port times out,
+including an unused control port, so it is a default-drop firewall). No WebRTC,
+no raw TCP, no RTMP to the box. That constrains us to SSH-carried channels, of
+which there are two:
+
+| Option | How | Bandwidth | Latency added | Browser can be remote? |
+|---|---|---|---|---|
+| **A. Render in the browser** | Box sends motion only (252 B/frame), browser renders | 0.05 Mb/s | +RTT (~19 ms) | **Yes** |
+| **B. Render on the box** | Box renders + MJPEG/WebRTC out, forwarded by `ssh -L` | 1.0 Mb/s | +0 (one hop) | No |
+| ~~C. gRPC frames~~ (today) | 512² JPEG over a stateful session RPC | 1.0–34 Mb/s | +2 hops | No |
+
+**Option B is the default**, because it needs no new renderer, no weight
+distribution, and works today: `ssh -L 8010:127.0.0.1:8010` puts the box's own
+web UI on your localhost, and its existing WebRTC/MJPEG path streams at
+**1.0 Mb/s** — which the measured link carries without noticing. The firewall
+problem disappears because SSH is the tunnel, and the app's port stays bound to
+`127.0.0.1` on the box.
+
+**Option A is the interesting one, and it is not a small change.** It moves warp +
+decode into WebGL in the browser. That needs the appearance volume `f_s`
+(8.4 MB fp32 / 4.2 MB fp16 per frame, §8.3) shipped **once per avatar at connect**
+— fine, it is a download not a stream — plus a `grid_sample_3d` implementation
+and the SPADE decoder in WebGL, which is a real port. Its payoff is that the box
+only ever sends motion, so bandwidth stops being a variable and a browser anywhere
+can drive it. **Deferred to Phase 5**, and recorded here so the seam for it is
+designed in now rather than retrofitted.
+
+The seam that makes both cheap, and which survives from the old code:
+
+```
+BaseAvatar.paste_back_frame(res_frame, idx) -> finished frame
+        ├── local  (§8.4): warpAffine + mask lerp, as today
+        ├── option B:      render locally, publish to the normal output
+        └── option A:      return motion; a client-side renderer draws it
+```
+
+`paste_back_frame` is already the single narrowest override point
+(`musetalk_avatar.py:177`, and `base_avatar.py:575` calls it inside the
+inference loop), so both options are a subclass, not a restructure.
+
+
+---
+
+## 8. Integration design (Phase 2 detail)
+
+### 8.1 Registration
+
+`avatars/ditto_avatar.py` exposes `load_model()`, `load_avatar(id)`,
+`warm_up(...)`, and `@register("avatar","ditto") class DittoAvatar(BaseAvatar)`.
+
+We own the component wiring and do **not** call `StreamSDK`: it embeds a 6-thread
+queue pipeline plus a video writer, and `BaseAvatar` already provides the
+threading. Driving a thread pool from inside another thread pool is the one thing
+to avoid.
+
+### 8.2 Audio — the one real design decision
+
+Upstream needs HuBERT features from **its own** `hubert_streaming_fix_kv.onnx`
+(1.46 GB, streaming KV cache, `chunksize=(3,5,2)`: feed 6480 samples, get 5
+valid 1024-dim features). This repo's `HubertASR` uses
+`TencentGameMate/chinese-hubert` — a different checkpoint.
+
+| | Shape | Verdict |
+|---|---|---|
+| A | `PcmASR` forwards raw 16 kHz PCM into Ditto's own `Wav2Feat` | **chosen** |
+| B | Feed `HubertASR` features into the LMDM | rejected — feature-space mismatch, silent quality bugs |
+| C | Reuse whisper features | rejected — the LMDM was trained on HuBERT, not whisper |
+
+So `avatars/audio_features/pcm.py` (~30 lines): accumulate PCM, emit a 6480-sample
+window per 3200-sample advance, keep the 2-chunks-per-frame contract `BaseAvatar`
+expects. The `.onnx` runs on the box GPU through onnxruntime-gpu, already a dep.
+
+**Verified against source and implemented** (`avatars/audio_features/pcm.py`,
+16 tests in `tests/test_pcm_asr.py`):
+
+| Contract | Value | Source |
+|---|---|---|
+| window | 6480 samples (0.405 s) | `sum(chunksize)*0.04*16000 + 80` |
+| stride | 3200 samples (0.200 s) | `chunksize[1]*0.04*16000` |
+| output | `[5, 1024]` | `reshape(chunksize[1], 2, 1024).mean(1)` |
+| rate | **25 features/s = 1 per video frame** | 16000/3200×5 |
+| valid slice | `encoding[-7:-2]` | `Wav2FeatHubert.__call__` |
+
+Two bugs the tests caught, both worth keeping fixed:
+
+1. **`feat_queue` is bounded (maxsize=2) and drained by the inference loop.** A
+   plain `put()` deadlocks the ASR thread the moment inference falls behind —
+   which starvation makes routine, since a starved batch is emitted even with no
+   audio. `_emit()` now uses `put_nowait`, drops the superseded batch, and counts
+   it in `dropped_batches`.
+2. **`batch_size` is rarely a multiple of 5**, so features are buffered and
+   sliced by row, never re-windowed per frame. Re-windowing would pair frame *n*
+   with the wrong audio; slicing keeps the pairing exact.
+
+TTFF re-derived from this contract, matching §4.3 independently: 70-feature seed
++ 2 passes × 10 features × 40 ms = **0.8 s**, i.e. the seed is the floor.
+
+### 8.3 Artifacts
+
+Registration is offline and per-avatar, and its output is large. `f_s` is the
+appearance feature volume from `core/models/modules/appearance_feature_extractor.py`,
+which reshapes to **`Bx32x16x64x64`** = 2.1 M floats = **8.4 MB/frame fp32**
+(16.8 MB for a 2-frame clip; **630 MB for a 75-frame clip**). This is double the
+figure the previous plan carried, because it assumed LivePortrait's 2-D
+`[1,256,64,64]` rather than the 5-D volume `WarpingNetwork` actually consumes.
+
+- Store `f_s` as **fp16** (halve it → 315 MB for 75 frames, 4.2 MB/frame).
+  Every tensor through `.detach().cpu()` on write, `map_location` on read — this
+  repo has been bitten twice by device-tagged artifacts
+  (`tests/test_latents_device.py`).
+- `x_s_info` per frame is tiny; keep all of it.
+- In-process paste-back needs `full_imgs/` + per-frame `M_c2o` + the 512² mask.
+- `ditto.json` is the detection key: `{version, avatar_id, render_size,
+  frame_count, f_s_dtype, has_eye_state, artifact_sha256}`. Its rule goes
+  **first** in `detect.py`, before the `face_imgs/` test, or a ditto avatar reads
+  as wav2lip.
+
+At 4.2 MB/frame fp16, a 75-frame avatar is ~315 MB — and clips are per-avatar, so
+this is a per-avatar cost, not a per-session one. **Phase 2 decides on a
+measurement**, not a guess, between: fp16 full-rate (best quality); fp16 + every
+2nd frame registered with `x_s_info` interpolation (upstream already smooths with
+`smo_k_s=13`, so K=2 is defensible); or a single registered frame with
+`is_image_flag=True`, which makes Ditto invent head motion — more expressive than
+musetalk, but it discards the source video's own head movement.
+
+### 8.4 Paste-back
+
+`cv2.warpAffine(render, M_c2o[idx][:2], dsize=(w,h))` + mask lerp + clip +
+`uint8` — exactly `PutBackNumpy`. Silence path: `frame_list_cycle[idx]` via
+`mirror_index`, same as every other backend.
+
+---
+
+## 9. Phases
+
+### Phase 0 — Ditto standalone on the box (the immediate ask)
+
+Nothing integrated. Prove the model runs; measure it.
+
+| Step | What |
+|---|---|
+| 0.1 | find conda; create env `livetalking`, python 3.12 |
+| 0.2 | `torch torchvision torchaudio` cu124 → 2.5.1 / 0.20.1 |
+| 0.3 | pip the pinned set from §2 |
+| 0.4 | clone upstream at `c3e47ee` |
+| 0.5 | fetch `ditto_pytorch/**` + `ditto_cfg/**` (2.31 GB) |
+| 0.6 | run `inference.py` on `example/audio.wav` + `example/image.png` |
+
+**Gate:** an mp4 comes out, plays, lips synced. Then measure and report:
+
+| Metric | How |
+|---|---|
+| RTF | wall clock ÷ output duration (`ffprobe`) |
+| one LMDM pass | time `Audio2Motion.__call__` over 10 passes → median |
+| warp+decode per frame | time the chain over 50 frames |
+| peak VRAM | `nvidia-smi` sampled during the run |
+| TTFF | timestamp of the first written frame |
+
+**Decides:** `overlap_v2` (keep 70; lower if a pass exceeds 400 ms) and
+`render_size` (512 if warp+decode ≤ 40 ms, else 256).
+
+**Status — gate PASSED (2026-11-12), with a platform caveat.** The mp4 came out
+(`tmp/result_hybrid_final.mp4.tmp.mp4`, 394 frames, 15.76 s, 25 fps, h264
+1432×1432, ~5 MB; writer ran 394 frames in 2:00 with zero worker errors). Getting
+there required three findings, all of which shape Phase 2:
+
+1. **Upstream drops `device` on two loader paths.** `create_model` (torch) and
+   `load_force_ori_type` (ORT) both accept `device` and never forward it to the
+   module ctors, whose defaults are `device="cuda"`. Consequences on this box:
+   torch modules allocated noise/timesteps on CUDA regardless of cfg, and aux
+   ORT sessions requested the CUDA EP even when the cfg said `cpu`. Both patched
+   in the box's `core/utils/load_model.py` (kwargs-win + inject-on-TypeError).
+   Phase 2 keeps its own copy of this fix — it is a correctness bug everywhere,
+   not only here (any CPU-only host hits the `.to()` mismatch crash).
+2. **`torch.backends.cudnn.enabled = False` is load-bearing on this box.** Any
+   cuDNN conv → SIGBUS via the flaky dxgkrnl driver (pure-torch repro, 0/3 with
+   cuDNN, 4/4 without; matmul/unfold+gemm unaffected). The whole pipeline runs
+   with cuDNN off at these measured speeds. This is platform mitigation, not a
+   model choice — retest once Windows/WSL ships a fixed dxgkrnl.
+3. **Upstream's worker threads swallow exceptions**, then the surviving
+   `audio2motion` blocks forever on a no-timeout `queue.put` at
+   `stream_pipeline_offline.py:413` and `close()` hangs on `join()`. The
+   silent killer was pyximport failing to build `core/utils/blend/blend.pyx`
+   (gcc 15 + py3.12 distutils), which killed putback and, via `stop_event`,
+   every other consumer. Fix shipped: `PutBackNumpy` in place of `PutBack`
+   (2 warpAffines, upstream's own numpy equivalent — exactly what the skill
+   prescribed) — never import `putback.py`'s Cython path.
+
+Measured on the box (hybrid cfg: aux=CPU, torch=CUDA, cuDNN off,
+`v0.4_hubert_cfg_pytorch` offline numbers overlap_v2=10/steps=50):
+
+| Metric | Value | Notes |
+|---|---|---|
+| RTF | **~7.6× slower than real time** | 120 s for 15.76 s of audio |
+| LMDM pass (median of 10) | **1593-1627 ms** | 50 steps, 70 valid frames/pass |
+| warp per frame (median of 50) | **131 ms** | with cuDNN off |
+| decode per frame (median of 50) | **91 ms** | with cuDNN off |
+| peak VRAM | **8679 MiB of 12288** | nvidia-smi during run |
+| TTFF | ~30 s | registration (~28 s) + first pass |
+
+**Phase-0 verdict on the plan's decision gates:** `overlap_v2=70` online cfg is
+**not reachable real-time on this box** (a pass must fit 400 ms; the offline pass
+is ~1600 ms; the online cfg's 10 steps cut that ~5× to ~320 ms/pass — marginal
+against 10 frames/pass = 400 ms budget: online mode landing ≈ at the gate, to
+be measured with the online kwargs in Phase 2). `render_size`: at 222 ms/frame
+warp+decode, 512² misses the 40 ms/frame budget by 5.5× → **plan for
+`render_size=256`** and revisit if the driver fix ever lands. Offline batch use
+(produce an mp4) works at measured RTF regardless.
+
+### Phase 1 — the app runs on the box
+
+Install the app's own requirements into the same env, `./run.sh`, and confirm
+**musetalk still works locally** — it is the incumbent and the control for "did
+the dependency merge break anything". Gate: an existing avatar streams ≥25 fps.
+This is what proves the §2 merge *empirically*; §2 only proves it resolves.
+
+### Phase 2 — Ditto as a plugin
+
+`ditto_avatar.py`, `PcmASR`, `genavatar` (registration + artifact write),
+`detect.py` rule, `--model ditto`, `AVATAR_GENERATORS` entry. Gate: create a
+ditto avatar from a video, connect it, stream ≥25 fps, emotion knob visibly
+changes expression.
+
+### Phase 3 — replace the transport, then delete the old one
+
+Two steps, in this order, so the box is never unreachable:
+
+1. **Prove option B** (§7.4): `ssh -L 8010:127.0.0.1:8010`, run the app on the
+   box, watch a stream from the Mac. Gate: ≥25 fps sustained, and `ifstat`/`nettop`
+   confirms ≈1 Mb/s, not tens. This needs no code change — `config.yaml` already
+   sets `listenport: 8010` and `app.py:647` binds `0.0.0.0`, so the only delta is
+   binding `127.0.0.1` on the box and tunnelling.
+2. **Delete** §7.1's inventory in one commit: tests updated, `pytest tests/`
+   green, `config.yaml` / `admin.html` cleaned, `git grep -E 'worker_mode|remote_worker|remote_avatar'` empty.
+
+Only after Phase 2 is green, because until Ditto streams on the box there is
+nothing worth tunnelling.
+
+### Phase 4 — quality and knobs
+
+Per-frame `ctrl_info`, barge-in reset, `sampling_timesteps` sweep, TRT lane if
+the PyTorch lane is short.
+
+### Phase 5 — motion-only transport (optional, only if a remote browser is wanted)
+
+Ship `f_s` once per avatar at connect, send 252 B/frame, render warp+decode in
+WebGL. Gate: parity with the local render at 25 fps. Explicitly **not** required
+for the project to be finished — option B already works.
+
+---
+
+## 10. Risks
+
+| Risk | Evidence | Mitigation |
+|---|---|---|
+| **Warp+decode < 40 ms at 512²** | unmeasured; LivePortrait class on a 3060 | `render_size=256` — a config value, not a rewrite |
+| **One LMDM pass > 400 ms** | unmeasured | lower `overlap_v2` (costs latency) or fewer steps |
+| `mediapipe` pins `numpy<2` env-wide | verified (`numpy<2`) | accepted; app is numpy-2 clean; **Phase 1 proves it runs** |
+| Ditto on py3.12 | upstream tested 3.10; no 3.11+ blocker found by grep | fall back to a py3.10 env for the box (same dep set resolves) |
+| `f_s` 630 MB/avatar fp32 | computed from `Bx32x16x64x64` = 2.1 M floats | fp16 → 315 MB; every-2nd-frame → 158 MB |
+| Eye extractor needs mediapipe at registration | verified: called unconditionally | it is a dep now; `use_eye_open=False` only disables conditioning |
+| InsightFace aux licence (non-commercial) | upstream model card | school project; recorded, not redistributed |
+| Only tcp/2222 reachable | measured, incl. unused-port control | option 1: browser on the box; no app change |
+
+---
+
+## 11. Acceptance
+
+1. `./run.sh --model ditto` (or an auto-detected ditto avatar) connects and
+   streams ≥25 fps for 60 s, `inferfps`/`finalfps` logged.
+2. TTFF measured; the §4.3 derivation replaced by the measured number.
+3. `pytest tests/` green with no GPU.
+4. `requirements.txt` installs into **one** env on the box, from scratch.
+5. musetalk and wav2lip unchanged (registry + detection tests assert).
+6. Nothing Ditto-related imports on a machine without the weights; failure is a
+   loud `RuntimeError`, never a silent wrong path.
+7. `git grep remote_` finds only what §7 chose to keep.
+8. A stream is watchable from the Mac over `ssh -L 8010:127.0.0.1:8010` with the
+   box's port bound to loopback, at ≈1 Mb/s measured on the wire (§7.4 option B).
+
+## 12. Evaluated and rejected: FasterLivePortrait + StreamTalk
+
+Recorded so the question is not re-litigated. Both were checked against source,
+not against the READMEs.
+
+### 12.1 FasterLivePortrait — not a face model, an implementation of Ditto's tail
+
+Cloned `warmshao/FasterLivePortrait` (1210 stars, MIT code, pushed 2025-06-29)
+and read `src/models/`. It is LivePortrait converted to ONNX/TensorRT:
+`appearance_feature_extractor_model.py`, `motion_extractor_model.py`,
+`warping_spade_model.py`, `stitching_model.py`, `predictor.py`. **There is no
+audio path of its own** — the only audio-driven thing in it is a vendored
+`JoyVASA` (and an `XPose` subtree), separate features.
+
+So it does not replace Ditto's face stage; it re-implements the stages *after*
+the motion is decided (warp + SPADE decode + paste-back), which Ditto already has.
+
+The one useful finding: **the motion spaces are identical.** Ditto's condition
+vector is LivePortrait's, verbatim — `core/atomic_components/audio2motion.py:16`
+builds `scale(1), pitch(66), yaw(66), roll(66), t(3), exp(63), kp(63)`. That is
+the FLP/LivePortrait implicit-keypoint format. Consequence: FLP's optimized
+ONNX/TRT warp+decode **could** be swapped into Ditto's tail later as a pure
+performance substitution, with no retraining and no motion-space conversion.
+
+Why it is still not the choice now:
+
+| Issue | Detail |
+|---|---|
+| Doesn't remove Ditto's LMDM | The expensive, novel part of Ditto is the latent motion diffusion model. FLP has nothing to replace it with. |
+| TRT path needs a custom plugin | `predictor.py:48` `ctypes.CDLL("./checkpoints/liveportrait_onnx/libgrid_sample_3d_plugin.so")`; the `.so` must be built from `FLP/grid-sample3d-trt-plugin`, and the README pins **TensorRT 8.x** ("versions >=10.x are not compatible"). |
+| CV2 CUDA build is a worse trap | The ORT route needs onnxruntime-gpu **built from source** (`grid_sample` CUDA kernel didn't land upstream) — the README documents `pip install build/Linux/Release/dist/onnxruntime_gpu-1.17.0-cp310-cp310-linux_x86_64.whl`, i.e. a locally-built wheel. That is a multi-hour build on the box and a fork of onnxruntime to maintain. |
+| Duplicate stack | ~3.1 GB of ONNX weights (421 MB `warping_spade`, 115 MB `landmark`, 113 MB `motion_extractor`, …) to reproduce what Ditto's 2.31 GB lane already ships. |
+| Python pin | the prebuilt ORT wheel above is `cp310`; our env is 3.12. |
+
+**Verdict: keep as a Phase-4 optional optimisation** for the warp/decode stage
+(§10's "warp+decode < 40 ms" risk) — and only if Phase 0 measures that stage as
+the bottleneck. Adopting it now would add a TensorRT-8 + custom-plugin + from-
+source-ORT dependency chain to solve a problem we have not yet measured.
+
+Note the honest version of the pitch: Ditto's own `ditto_trt_Ampere_Plus` lane
+(2.08 GB, fp16 `*.engine`) already provides the TensorRT speedup with upstream's
+own conversion scripts, so FLP is not even uniquely good at the thing it is good
+at.
+
+### 12.2 StreamTalk — right idea, wrong output space (SMPL-X, not pixels)
+
+`Xiangyue-Zhang/StreamTalk` confirmed: **ECCV 2026, "Streaming Co-Speech Gesture
+Generation with Key-Pose Anchoring"**, MIT, 53 stars, pushed 2026-08-28. Real and
+recent, unlike the first assumption that it was a talking-head repo.
+
+It is genuinely good at what it does: **FGD 0.383** (1-speaker) / **0.293**
+(all-speaker) on BEAT2, **76 FPS on a V100 16 GB**, closed-loop streaming with
+key-pose anchoring to stop long-horizon drift, part-aware DiT over hands/body/root.
+
+But its output is **SMPL-X parameters** (`poses`, `trans`, `expressions`,
+`betas`, `gender`), `.npz` — a body mesh, not a rendered frame. Wiring it to Ditto
+means building the missing renderer:
+
+```
+audio ─► StreamTalk ─► SMPL-X params ─► [NOTHING HERE] ─► pixels
+                                          ▲
+                          needs a parametric body model renderer
+                          (SMPL-X licence + mesh→image + a full-body
+                           appearance source that Ditto does not have)
+```
+
+Ditto renders a **portrait**: `WarpingNetwork` deforms a 5-D feature volume
+extracted from one face crop (§8.3). There is no body, no torso geometry, no
+garment — nothing for `poses`/`trans` to deform. The two systems do not share an
+output space, so "Ditto for the face, StreamTalk for the gestures" is not a
+wiring job; it requires a third model to rasterize the body and a body-level
+avatar capture Ditto has no path for.
+
+Operational costs even if we built that:
+
+- **SMPL-X is registration-gated** (smpl-x.is.tue.mpg.de, non-commercial
+  research licence) — a manual download the script cannot fetch.
+- **Speaker-specific retrieval database.** SPG retrieves a tail pose from a
+  per-speaker motion DB, so the box needs BEAT2's `smplxflame_30/` +
+  `train_test_split.csv` (thousands of files) — not a 2 GB weight download.
+- **Its own WavLM features** (`patrickvonplaten/wavlm-libri-clean-100h-large`),
+  a fourth audio feature extractor in the tree alongside Ditto's HuBERT, the
+  repo's `HubertASR`, and whisper.
+- One checkpoint is **`2_scott`-specific**; the all-speaker one exists but its
+  retrieval DB requirement is the same.
+- Env is pinned py3.9 / torch 2.0 / CUDA 11.8 — a third incompatible env.
+
+**Verdict: rejected for this architecture.** It is a body-motion model, and
+LiveTalking's avatars are upper-body/portrait talking heads driven frame-by-frame
+through `inference_batch`. If full-body gesture is a real product goal, it is a
+separate renderer project, not a Ditto plugin.
+
+If the actual want behind the question is *more expressive upper-body motion from
+one portrait*, the cheap version already exists inside Ditto and is scheduled:
+`is_image_flag=True` (single registered frame) makes Ditto invent head/upper-body
+motion instead of replaying the source video's, and per-frame `ctrl_info` (§9
+Phase 4) exposes expression and pose offsets as runtime knobs.
 
 ## References
 
-- Upstream: https://github.com/antgroup/ditto-talkinghead (Apache-2.0),
-  paper https://arxiv.org/abs/2411.19509
+- Upstream: https://github.com/antgroup/ditto-talkinghead (Apache-2.0, pinned
+  `c3e47ee`), paper https://arxiv.org/abs/2411.19509
 - Weights: https://huggingface.co/digital-avatar/ditto-talkinghead
-- LivePortrait ancestor: https://github.com/KwaiVGI/LivePortrait (MIT)
-  — the warp/decode lineage (cf. FasterLivePortrait ~30 fps whole-pipeline on
-  Ampere with TRT)
-- Related in-repo precedent for the sidecar/offline patterns: `tools/enhance/`,
-  `docs/remote-gpu.md`
-- Repo conventions applied: registry in `avatars/detect.py` /
-  `server/avatar_routes.py:AVATAR_GENERATORS` / device-portability per
-  `tests/test_latents_device.py` / `mirror_index` in `utils/image.py`
+- LivePortrait lineage (warp/decode) https://github.com/KwaiVGI/LivePortrait (MIT)
+- Upstream sources read for this plan: `stream_pipeline_online.py`,
+  `core/atomic_components/{audio2motion,condition_handler,wav2feat,avatar_registrar,putback,cfg}.py`,
+  `core/models/{lmdm,warp_network,decoder,appearance_extractor}.py`,
+  `core/utils/{load_model,eye_info,blend,tensorrt_utils}.py`
