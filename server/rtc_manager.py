@@ -83,6 +83,29 @@ class RTCManager:
                 self._forget_pc(pc)
                 session_manager.remove_session(sessionid)
 
+        # ICE watchdog: aiortc never fires "failed" on a silent ICE hang (the
+        # browser's candidates unreachable/mDNS-unresolvable), so a stuck
+        # "connecting" session would hold its max_session slot forever.
+        connected = asyncio.Event()
+
+        @pc.on("connectionstatechange")
+        async def _arm():
+            if pc.connectionState == "connected":
+                connected.set()
+
+        async def _watchdog():
+            try:
+                await asyncio.wait_for(connected.wait(), timeout=30.0)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Session %s: ICE never connected within 30s — tearing down",
+                    sessionid)
+                await pc.close()
+                self._forget_pc(pc)
+                session_manager.remove_session(sessionid)
+
+        asyncio.ensure_future(_watchdog())
+
         # 添加发送轨道
         from server.webrtc import HumanPlayer
         player = HumanPlayer(avatar_session)

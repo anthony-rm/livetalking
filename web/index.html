@@ -80,6 +80,10 @@
                         </div>
                     </div>
                     <div class="d-flex gap-2">
+                        <div class="d-flex align-items-center gap-2">
+                            <input class="form-check-input" type="checkbox" id="use-stun" checked>
+                            <label class="form-check-label small" for="use-stun">Use STUN</label>
+                        </div>
                         <button class="btn-primary-custom" id="btnStart" onclick="start()"><i class="bi bi-play-fill"></i> Connect</button>
                         <button class="btn-danger-custom" id="btnStop" onclick="stop()" style="display:none;"><i class="bi bi-stop-fill"></i> Disconnect</button>
                     </div>
@@ -160,6 +164,7 @@
 <script>
 let pc = null;
 let sessionid = null;
+let localStream = null;   // permission-only; tracks stopped immediately
 
 // ─── Avatar List ───────────────────────────────────────────
 function loadAvatars() {
@@ -255,8 +260,21 @@ function negotiate() {
     });
 }
 
-function start() {
+async function start() {
     document.getElementById('offerError').style.display = 'none';
+    // Grabbing a local media stream before ICE makes Chrome de-obfuscate host
+    // candidates: without media permission the only host candidate is an
+    // mDNS `*.local` name the server cannot resolve, so ICE never connects.
+    // An allowed permission prompt also counts as the autoplay user gesture.
+    if (!localStream) {
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            localStream.getTracks().forEach(t => t.stop());   // never sent anywhere
+        } catch (e) {
+            showError('Microphone permission is required to connect (Chrome hides the network address without it).');
+            return;
+        }
+    }
     const config = { sdpSemantics: 'unified-plan' };
     if (document.getElementById('use-stun')?.checked) {
         config.iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
