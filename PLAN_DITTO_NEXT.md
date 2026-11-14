@@ -235,7 +235,114 @@ STATUS 2026-11-14 late: **decoder + warp BOTH on TRT 10, end-to-end measured.**
 - Box reboots by the teacher on crash ("崩了后短信给我重启吧") — expect uptime
   resets; /tmp loss; always `free -m` + `nvidia-smi` first.
 
+# PLAN_DITTO_SESSION_3 — resume point (end of 2026-11-14, evening session)
+
+## Current advancement (all VERIFIED, nothing below is speculation)
+
+Ditto is a fully working streaming backend on the box (10.130.104.166:2222,
+WSL2, RTX 3060):
+
+- **Three TRT-10 lanes live** in `ditto_avatar.load_model`, auto-detected on
+  the box: decoder engine (75.2→31.2 ms), plugin-free hybrid warp
+  (124.6→24.4 ms; segA/B/C engines), LMDM engine (33.9→8.75 ms/step).
+  End-to-end: **246.2 → 73.7 ms/frame = 4.0 → 13.6 fps** (wired probe).
+- **Real browser streaming WORKS** (user-confirmed + headless-Chrome verified):
+  the spinner had three stacked causes, all fixed & pushed:
+  1. Chrome mDNS-obfuscates host candidates without media permission;
+     box has no avahi/DNS → ICE dead. Fix: `getUserMedia({audio:true})`
+     before the PeerConnection in index.html (tracks stopped immediately).
+  2. aiortc never fires `failed` on a silent ICE hang → zombie session held
+     the slot. Fix: 30 s ICE watchdog in `server/rtc_manager.py`.
+  3. `max_session: 5` OOM-killed the box (15.7 GB RSS, ~1 GB/session host RAM).
+     Fix: `max_session: 1` in config.yaml. NOTE: kill/`kill-all` endpoints
+     work fine; they only "lost" to the kernel OOM kill.
+- **`POST /human` fixed & verified end-to-end** (TTS-AUDIO-FLOWING): edge-tts
+  died on the box's dead DNS (`speech.platform.bing.com` unresolvable; the
+  endpoint itself IS reachable by IP — TLS verified with the correct Microsoft
+  cert). Fix in `tts/edge.py`: `_install_dns_fallback()` pins the host to
+  150.171.28.10 in-process when `getaddrinfo` fails (env override
+  `EDGE_TTS_FALLBACK_IP`). Measured: 3.2 s synthesis, audio flows over WebRTC.
+- **Server log shows `final fps: 25.0` with a live viewer** (render loop
+  saturated; the 11.6-11.8 numbers from the audio-paced gate were not the
+  render ceiling).
+- Avatars on box: `ditto_real_v2` (from videos/81361edc_enhanced.mp4, 75
+  frames) + `ditto_test1`. `anthony010` deleted (musetalk, backend-swap trap).
+- **All of the above is pushed to origin/main** (`b5e0e08`, `f6f2c6c` + the
+  earlier `272876b/d324a49/abb9516/b3150af/63c7c33`).
+
+## LAST DISCOVERY (in flight when we stopped — NOT yet shipped/committed)
+
+**Blue-face root cause FOUND and fix written locally (uncommitted).**
+The decoder returns RGB (upstream contract); `paste_back_frame` blends it onto
+`cv2.imread` BGR frames without converting → R/B swapped inside the blended
+face region. Fix (in `avatars/ditto_avatar.py`, uncommitted in working tree):
+convert RGB→BGR in `paste_back_frame` before the warp. The same diff also
+carries a `_paste_geom_cache` optimization (bbox+matrix per frame, cut
+paste-back 41.6→10.9 ms/frame at 1080×1920).
+**Verify tomorrow before shipping**: confirm musetalk's path does NOT double-
+convert (its `inference_batch` output convention) so the fix is ditto-only;
+run the suite; ship to box; visual check.
+
+**Audio symptoms reported by the user, diagnosis INCOMPLETE:**
+- "delay after Send" — partly inherent (Ditto zero-seed ~2.8 s overlap_v2=70
+  agitation + 3.2 s edge-tts synthesis), but not yet measured precisely.
+- "laggy audio while talking" — suspects (from code read, not yet tested):
+  the `_pace_audio` wall-clock thread (base_avatar.py:495) pushes silence when
+  `audio_out_queue` empties, and the WebRTC track's `next_timestamp()` runs
+  its own wall-clock in `server/webrtc.py` — two independent clocks that can
+  drift/stretch. Also `audio_out_queue` is Queue(maxsize=200) ≈ 4 s, and
+  inference at 13.6 fps < 25 fps pacing means the queue runs dry during speech
+  → silence splices → "laggy" audio. **Next session: measure queue depth
+  during speech, not guess.**
+
+## NEXT SESSION TASKS (in order)
+
+1. **Reconnect** — box was UNREACHABLE at stop (SSH timeout, school network or
+   teacher reboot). Tunnel 127.0.0.1:8010 also dead (it was process 50636).
+   Restart with `ssh -N -p 2222 -L 8010:127.0.0.1:8010 ecpkn_bac@10.130.104.166`
+   after checking `ssh -p 2222 ... uptime`; if the box rebooted, /tmp logs and
+   probes are GONE (persisted: ~/ditto-weights engines, ~/livetalking_box,
+   ~/ditto-probe). /tmp/wired_test.py etc. need re-upload from Mac scratch.
+2. **Ship + verify the blue-face fix** (in the uncommitted diff): confirm the
+   RGB/BGR conventions per backend, run the offline wired probe, screenshot a
+   frame, ship `avatars/ditto_avatar.py`, restart server, human check.
+   Also flag: `tests/` has nothing covering paste-back colours — worth a small
+   unit test that feeds a red render + blue frame and asserts channel order.
+3. **Diagnose the laggy audio properly.** Instrument `_pace_audio`: log
+   `audio_out_queue.qsize()` every 500 ms during a speech run; if it drains to
+   0 during speech (likely — 13.6 fps render < 25 fps audio pacing), the fix
+   is to pace the audio track from the ARRIVING chunks (burst-tolerant) or
+   raise render throughput, not to add buffering. Check the two-clock drift
+   (pacing thread 50 Hz vs webrtc.py next_timestamp wall clock) too.
+4. **Measure the real Send→speech latency** and reduce if worthwhile:
+   edge-tts 3.2 s (could synthesize while LMDM seeds), Ditto seed 2.8 s
+   (structural, online cfg), queue depth. Report the split to the user.
+5. **Commit + push** whatever lands (suite green first). The uncommitted
+   paste-back diff must be split into two commits if both the fix and the
+   geometry cache are kept: fix → "fix: ditto paste-back RGB->BGR",
+   cache → "perf: cache paste-back geometry".
+6. Optional (from the old plan, still true): render_size=256 (~2x more headroom),
+   the 25 fps ceiling itself (putback 10.9 ms + encode), DITTO_CFG env pinning.
+
+## Traps specific to THIS session's work (do not relearn)
+
+- Chrome-only: the mic-permission prompt is the ICE fix — never remove the
+  `getUserMedia` call; verify with a REAL browser (aiortc cannot reproduce
+  mDNS/DNS issues, it sends real IPs).
+- The box resolves NO DNS at all: edge-tts needs the in-process pin (already
+  in mqtt... in `tts/edge.py`), and any other network call on the box needs
+  the same treatment (probe with `getaddrinfo` first).
+- `pgrep -f "python app.py"` matches the bash WRAPPER too; find the real PID
+  via `ss -ltnp | grep 8010` (pid=) or `~/livetalking_box/livetalking.pid`.
+- `max_session: 1` means ANY stale session blocks new connects ~forever if it
+  doesn't ICE-complete. The 30s watchdog handles it now, but expect "Maximum
+  session limit reached" right after any manual client kill + immediate retry.
+- aiortc clients run on the box resolve 172.24.149.154 (WSL NAT); the Mac's
+  Chrome sees 10.135.60.72 — both are correct, the connection works via the
+  mic-permission fix exposing the Mac's real IP to the box.
+
 ## Key file paths (Mac)
+
 - Plan: ~/Projets/livetalking/PLAN_DITTO.md (Phases §9)
 - Skill: livetalking (loaded; references/ditto.md has all upstream contracts)
 - Scratch harnesses: ~/.hermes/cache/scratch/ditto/ (probe_backend_chain.py,
