@@ -163,32 +163,22 @@ class EnhanceJobManager:
                     background=params.get("background", pipeline.DEFAULT_BG),
                     fps=fps, progress_callback=progress)
             else:
-                # Heavy path (RVM + Real-ESRGAN + GFPGAN): route to the remote
-                # GPU worker when one is configured (LT_REMOTE_WORKER /
-                # --remote_worker). Progress is coarse here: the whole job runs
-                # in one RPC, so we just track phase transitions client-side.
-                from tools.enhance import remote_enhance
-                if remote_enhance.remote_enabled():
-                    job.phase = "remote-enhance"
-                    job.progress = 5
-                    result = remote_enhance.enhance_video_remote(
-                        job, params, job.output_path,
-                        params.get("matte_out"), params.get("person_out"))
-                    job.progress = 95
-                else:
-                    result = pipeline.enhance_video(
-                        params["video_path"], job.output_path,
-                        width=params.get("width", pipeline.DEFAULT_WIDTH),
-                        height=params.get("height", pipeline.DEFAULT_HEIGHT),
-                        background=params.get("background", pipeline.DEFAULT_BG),
-                        fit=params.get("fit", "contain"),
-                        strength=params.get("strength", 0.5),
-                        face_restore=params.get("face_restore", True),
-                        upscale=params.get("upscale", 1),
-                        max_frames=params.get("max_frames"),
-                        matte_out=params.get("matte_out"),
-                        person_out=params.get("person_out"),
-                        progress_callback=progress, should_cancel=cancelled)
+                # Heavy path (RVM + Real-ESRGAN + GFPGAN): runs here, on the
+                # machine with the GPU. The remote variant (one RPC for the
+                # whole job) is gone with the worker split.
+                result = pipeline.enhance_video(
+                    params["video_path"], job.output_path,
+                    width=params.get("width", pipeline.DEFAULT_WIDTH),
+                    height=params.get("height", pipeline.DEFAULT_HEIGHT),
+                    background=params.get("background", pipeline.DEFAULT_BG),
+                    fit=params.get("fit", "contain"),
+                    strength=params.get("strength", 0.5),
+                    face_restore=params.get("face_restore", True),
+                    upscale=params.get("upscale", 1),
+                    max_frames=params.get("max_frames"),
+                    matte_out=params.get("matte_out"),
+                    person_out=params.get("person_out"),
+                    progress_callback=progress, should_cancel=cancelled)
 
             job.result = result
             job.status = "cancelled" if job.cancel_requested else "completed"

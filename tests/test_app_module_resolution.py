@@ -49,12 +49,12 @@ def test_resolved_module_is_the_one_holding_model_state(monkeypatch):
     running = types.ModuleType("__main__")
     running.__file__ = "/repo/app.py"
     running.model_state = "ready"
-    running.model_backend = "remote"
+    running.model_backend = "musetalk"
     monkeypatch.setitem(sys.modules, "__main__", running)
 
     mod = routes._app_module()
     assert mod.model_state == "ready"
-    assert mod.model_backend == "remote"
+    assert mod.model_backend == "musetalk"
 
 
 if __name__ == "__main__":

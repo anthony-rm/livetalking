@@ -132,23 +132,6 @@
                     </span>
                 </div>
                 <div class="card-body">
-                    <!-- GPU status: generation and inference run on the remote
-                         CUDA box when one is configured. This strip is what
-                         tells you WHERE the click will execute, and offers the
-                         one action that fixes the common failure (tunnel down). -->
-                    <div id="gpuStrip" class="mb-3" hidden>
-                        <div class="d-flex align-items-center gap-2 flex-wrap"
-                             style="font-size:.82rem;">
-                            <span class="badge-status badge-silent" id="gpuBadge">
-                                <i class="bi bi-gpu-card"></i> checking…
-                            </span>
-                            <span class="text-muted" id="gpuDetail"></span>
-                            <button type="button" class="btn btn-outline-primary btn-sm ms-auto"
-                                    id="gpuConnect" hidden>
-                                <i class="bi bi-plug"></i> Connect GPU
-                            </button>
-                        </div>
-                    </div>
                     <form id="taskForm">
                         <!-- 1. source -->
                         <div class="mb-3">
@@ -927,86 +910,11 @@ async function loadAvatars() {
     } catch (e) { console.error("avatars", e); }
 }
 
-// ── GPU status strip ──────────────────────────────────────────────────────
-// Reports what the server will actually do: with the local/remote toggle set
-// to local, creation runs here; with remote (and an address), it runs on the
-// worker. The strip never implies the wrong machine.
-async function loadGpuStatus() {
-    const strip = $("gpuStrip"), badge = $("gpuBadge"),
-          detail = $("gpuDetail"), connect = $("gpuConnect");
-    try {
-        const r = await fetch("/api/remote/status");
-        const j = await r.json();
-        if (j.code !== 0) throw new Error(j.msg || "status failed");
-        const d = j.data || {};
-        const t = d.tunnel || {};
-        const localOnly = d.mode !== "remote";
-
-        // Local mode and no box configured: hide the strip — a local install
-        // should not be nagged about a GPU it never asked for.
-        if (localOnly && !d.address && !d.saved && !d.env) { strip.hidden = true; return; }
-        strip.hidden = false;
-
-        if (localOnly) {
-            badge.className = "badge-status badge-silent";
-            badge.innerHTML = '<i class="bi bi-cpu"></i> Local mode';
-            detail.textContent = "generation and enhance run on this machine"
-                + (d.saved ? " · switch to the remote worker in Admin" : "");
-            connect.hidden = true;
-            return;
-        }
-
-        const configured = !!d.address;
-        const up = configured && (t.listening || d.source !== "ssh-tunnel");
-        badge.className = "badge-status " + (up ? "badge-speaking" : "badge-recording");
-        badge.innerHTML = `<i class="bi bi-gpu-card"></i> ` +
-            (up ? "GPU worker" : "GPU offline");
-
-        const bits = [];
-        if (d.address) bits.push(d.address);
-        if (d.source) bits.push(d.source === "ssh-tunnel" ? "via SSH tunnel" : d.source);
-        if (t.ssh_port) bits.push("ssh " + t.ssh_port);
-        detail.textContent = bits.join(" · ");
-        connect.hidden = up;
-    } catch (e) {
-        strip.hidden = false;
-        badge.className = "badge-status badge-recording";
-        badge.innerHTML = '<i class="bi bi-gpu-card"></i> GPU status unknown';
-        detail.textContent = e.message || "";
-        connect.hidden = false;
-    }
-}
-
-$("gpuConnect").addEventListener("click", async () => {
-    const btn = $("gpuConnect");
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Connecting…';
-    try {
-        const r = await fetch("/api/remote/tunnel", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "start" }),
-        });
-        const j = await r.json();
-        if (j.code !== 0) throw new Error(j.msg || "tunnel failed");
-    } catch (e) {
-        alert("Could not connect the GPU worker: " + e.message +
-              "\n\nCheck SSH key access and data/tunnel.log (Admin → Remote GPU Worker).");
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-plug"></i> Connect GPU';
-        await loadGpuStatus();
-    }
-});
-
 // ── boot ───────────────────────────────────────────────────────────────────
 (async function boot() {
     await Promise.all([loadModels(), loadAvatars()]);
     updateFormMode();
     await refreshAll();
-    await loadGpuStatus();
-    // The tunnel is supervised and a dropped link recovers on its own; poll so
-    // the strip reflects reality instead of the state at page load.
-    setInterval(loadGpuStatus, 15000);
     startPolling();
 })();
 </script>

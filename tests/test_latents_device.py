@@ -41,7 +41,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GENAVATAR = os.path.join(REPO, "avatars", "musetalk", "genavatar.py")
 HOST_LOADER = os.path.join(REPO, "avatars", "musetalk_avatar.py")
-WORKER = os.path.join(REPO, "remote", "worker.py")
 
 
 def _pickle_device_tags(path) -> set[str]:
@@ -121,15 +120,6 @@ def test_host_loader_maps_location():
         assert any(k.arg == "map_location" for k in call.keywords), (
             f"avatars/musetalk_avatar.py:{call.lineno} torch.load without "
             "map_location -- a CUDA-tagged latents.pt cannot load on CPU/MPS")
-
-
-def test_worker_maps_location():
-    calls = _torch_load_calls(WORKER)
-    assert calls, "worker no longer calls torch.load"
-    for call in calls:
-        assert any(k.arg == "map_location" for k in call.keywords), (
-            f"remote/worker.py:{call.lineno} torch.load without map_location -- "
-            "an MPS-tagged avatar cannot load on the Linux box")
 
 
 def test_mapping_rescues_a_cuda_tagged_file(tmp_path):

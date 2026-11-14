@@ -96,8 +96,7 @@ def load_avatar(avatar_id):
     # map_location is MANDATORY here, not defensive: latents.pt may have been
     # written on a different machine (a CUDA box, or this Mac's MPS). A bare
     # torch.load then dies with "Attempting to deserialize object on a CUDA
-    # device but torch.cuda.is_available() is False" before the remote worker is
-    # even contacted, because the HOST loads this payload for paste-back.
+    # device but torch.cuda.is_available() is False".
     input_latent_list_cycle = torch.load(latents_out_path, map_location=device)
     with open(coords_path, 'rb') as f:
         coord_list_cycle = pickle.load(f)

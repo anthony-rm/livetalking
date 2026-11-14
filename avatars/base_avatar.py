@@ -337,11 +337,11 @@ class BaseAvatar:
         return 1
         
     def _pipeline(self):
-        """The optional batch pipeline (see remote.client.PipelinedInfer).
+        """The optional batch pipeline, or None.
 
-        Present only for backends whose inference is a network round-trip, where
-        overlapping two batches recovers the link idle time. Backends that
-        compute locally return None and keep the original synchronous path.
+        Present only for backends whose inference is not a local compute call and
+        benefits from overlapping two batches. Local backends return None and
+        keep the synchronous path.
         """
         return getattr(self, "infer_pipeline", None)
 

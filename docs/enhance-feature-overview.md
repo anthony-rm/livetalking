@@ -1,10 +1,9 @@
 # Video enhancer
----
 
 ## 1. What it does
 
-Takes a raw talking-head clip and
-produces a clean, standardized clean base video for the avatar generation:
+Takes a raw talking-head clip and produces a clean, standardized base video for
+avatar generation:
 
 1. the person is cut out of the background (matte),
 2. the lighting is corrected,
@@ -12,8 +11,8 @@ produces a clean, standardized clean base video for the avatar generation:
 4. person + matte are recomposited on a flat-color vertical canvas,
 5. the result is encoded to H.264.
 
-That output is then fed unchanged to any avatar generator (wav2lip,
-musetalk) — no change to `genavatar.py`, no change to any backend.
+That output is then fed unchanged to any avatar generator (wav2lip, musetalk) —
+no change to `genavatar.py`, no change to any backend.
 
 ---
 
@@ -43,14 +42,6 @@ musetalk) — no change to `genavatar.py`, no change to any backend.
                               (cv2.VideoWriter mp4v fallback)
 ```
 
-Sidecars written in the same pass (optional):
-
-```
- matte/00000000.png …    8-bit alpha, SOURCE resolution
- person/00000000.png …   person color layer, same geometry
- matte/meta.json         {canvas, fit, fps, frames, background}
-```
-
 ---
 
 ## 3. Technology choices
@@ -67,9 +58,7 @@ Sidecars written in the same pass (optional):
 
 ---
 
----
-
-## 6. Measured numbers (this machine)
+## 4. Measured numbers (this machine)
 
 - MPS, default path: **~2.3 s/frame** enhance + **~0.1 s/frame** matting.
 - 8 completed jobs in `data/enhance/*/job.json`, 79 frames at 1080×1920:
@@ -82,14 +71,10 @@ Weights: `RealESRGAN_x4plus.pth` (67 MB) + `GFPGANv1.4.pth` (348 MB) via
 `scripts/download_enhance_weights.py`; face detection models auto-download on
 first run from `facexlib`.
 
+---
 
-## 8. Limitations
-
-Product:
+## 5. Limitations
 
 - Flat-color background only for now
 - No true relighting: lighting correction fixes exposure and color cast, it
   cannot move the key light.
----
-
----

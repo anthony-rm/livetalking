@@ -127,7 +127,7 @@
     <nav class="navbar navbar-dark navbar-themed mb-4">
         <div class="container-fluid px-4">
             <a class="navbar-brand" href="/index.html"><i class="bi bi-camera-video-fill me-2"></i>LiveTalking</a>
-            <span class="text-white-50 small d-none d-md-inline">Admin console — sessions, config and remote worker</span>
+            <span class="text-white-50 small d-none d-md-inline">Admin console — sessions and config</span>
         </div>
     </nav>
 
@@ -188,91 +188,6 @@
                             <div class="skeleton" style="width: 60%;"></div>
                         </div>
                     </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Remote GPU Worker Section -->
-        <div class="row g-4 mt-2">
-            <div class="col-12">
-                <div class="glass-card p-4">
-                    <h4 class="mb-4 d-flex align-items-center gap-2">
-                        <i class="bi bi-gpu-card text-info"></i> Remote GPU Worker
-                        <span class="badge-status badge-silent ms-auto" id="remoteStateBadge">checking...</span>
-                    </h4>
-
-                    <!-- Compute mode: one switch for every GPU task (avatar
-                         inference, avatar generation, video enhance). -->
-                    <div class="d-flex flex-wrap align-items-center gap-3 mb-3 pb-3"
-                         style="border-bottom: 1px solid rgba(0,0,0,.06);">
-                        <div>
-                            <div class="field-label text-muted mb-1">Where GPU work runs</div>
-                            <div class="btn-group" role="group" aria-label="Compute mode">
-                                <input type="radio" class="btn-check" name="workerMode"
-                                       id="modeLocal" value="local" autocomplete="off">
-                                <label class="btn btn-outline-primary btn-sm" for="modeLocal">
-                                    <i class="bi bi-laptop"></i> This machine
-                                </label>
-                                <input type="radio" class="btn-check" name="workerMode"
-                                       id="modeRemote" value="remote" autocomplete="off">
-                                <label class="btn btn-outline-primary btn-sm" for="modeRemote">
-                                    <i class="bi bi-gpu-card"></i> Remote GPU worker
-                                </label>
-                            </div>
-                        </div>
-                        <div class="text-muted small ms-auto" id="workerModeHint"></div>
-                    </div>
-
-                    <div id="workerFields">
-                    <div class="row g-3">
-                        <div class="col-md-4">
-                            <label for="sshHost" class="form-label text-muted field-label mb-1">Host / IP</label>
-                            <input type="text" class="form-control" id="sshHost"
-                                   placeholder="192.168.1.42" autocomplete="off" spellcheck="false">
-                        </div>
-                        <div class="col-md-3">
-                            <label for="sshUser" class="form-label text-muted field-label mb-1">Username</label>
-                            <input type="text" class="form-control" id="sshUser"
-                                   placeholder="ubuntu" autocomplete="username" spellcheck="false">
-                        </div>
-                        <div class="col-md-3">
-                            <label for="sshPassword" class="form-label text-muted field-label mb-1">Password</label>
-                            <input type="password" class="form-control" id="sshPassword"
-                                   placeholder="stored in the OS keychain" autocomplete="new-password">
-                        </div>
-                        <div class="col-md-2">
-                            <label for="sshPort" class="form-label text-muted field-label mb-1">SSH port</label>
-                            <input type="number" class="form-control" id="sshPort" value="22" min="1" max="65535">
-                        </div>
-                    </div>
-
-                    <div class="d-flex flex-wrap gap-2 mt-3">
-                        <button class="btn btn-primary" id="btnConnect" onclick="connectRemote()">
-                            <i class="bi bi-plug-fill"></i> Connect
-                        </button>
-                        <button class="btn btn-outline-primary" id="btnTestSsh" onclick="testSsh()">
-                            <i class="bi bi-terminal"></i> Test
-                        </button>
-                        <button class="btn btn-outline-secondary" id="btnDisconnect" onclick="disconnectRemote()">
-                            <i class="bi bi-x-circle"></i> Disconnect
-                        </button>
-                    </div>
-
-                    <div id="remoteResult" class="mt-3"></div>
-
-                    <small class="text-muted d-block mt-3">
-                        <strong>Connect</strong> saves the login, proves it over SSH, opens the
-                        <code>ssh -L</code> forward to the worker and checks it. The password goes to the
-                        OS keychain — never to a file, a log, or back to this page. The host key is pinned
-                        on first login.
-                    </small>
-                    </div>
-
-                    <small class="text-muted d-block mt-3" id="modeLocalNote" hidden>
-                        Everything runs on this machine — avatar inference, avatar generation and video
-                        enhance. Pick <strong>Remote GPU worker</strong> to send them to the CUDA box;
-                        the saved login and tunnel are kept, so switching back is instant.
-                    </small>
                 </div>
             </div>
         </div>
@@ -368,6 +283,13 @@
                     `);
                 }
             }
+        }
+
+        // HTML-escape for values interpolated into template strings. Session
+        // ids and avatar ids come from URLs and file names, so they are never
+        // trusted as markup.
+        function escapeHtml(s) {
+            return $('<div>').text(s == null ? '' : String(s)).html();
         }
 
         function renderSessions(sessions) {
@@ -575,284 +497,10 @@
             }
         }
 
-        // ─── Remote GPU worker ────────────────────────────────────────────
-        function showRemoteResult(html, cls) {
-            $('#remoteResult').html(`<div class="alert ${cls} mb-0 py-2">${html}</div>`);
-        }
-
-        function escapeHtml(s) {
-            return $('<div>').text(s == null ? '' : String(s)).html();
-        }
-
-        // One badge for the whole section: connected means "the SSH forward is up
-        // and the worker answered"; there is nothing else to configure by hand.
-        function renderRemoteBadge(t, credentials, mode) {
-            const badge = $('#remoteStateBadge');
-            badge.removeClass('badge-silent badge-speaking badge-recording');
-            if (mode && mode !== 'remote') {
-                badge.text('Local mode').addClass('badge-silent');
-            } else if (!t || t.enabled === false) {
-                badge.text('Direct address').addClass('badge-recording');
-            } else if (t.suspended) {
-                badge.text('Disconnected').addClass('badge-silent');
-            } else if (t.running || t.listening) {
-                badge.text('Connected').addClass('badge-speaking');
-            } else if (credentials && credentials.complete) {
-                badge.text('Not connected').addClass('badge-recording');
-            } else {
-                badge.text('Not configured').addClass('badge-silent');
-            }
-        }
-
-        function renderSteps(d) {
-            const names = {
-                'ssh-login': 'SSH login',
-                'authorize-key': 'Authorize this host\'s key',
-                'key-login': 'Key-based login',
-                'tunnel': 'SSH tunnel',
-                'worker': 'Worker health'
-            };
-            const rows = (d.steps || []).map(s => `
-                <div class="small">
-                    <i class="bi ${s.ok ? 'bi-check-circle text-success' : 'bi-x-octagon text-danger'}"></i>
-                    <strong>${escapeHtml(names[s.name] || s.name)}</strong>
-                    ${s.detail ? `<span class="text-muted">— ${escapeHtml(s.detail)}</span>` : ''}
-                </div>`).join('');
-            let gpu = '';
-            if (d.ok) {
-                gpu = `<div class="mt-2 small">`
-                    + `<i class="bi bi-gpu-card"></i> <strong>${escapeHtml(d.device || '?')}</strong>`
-                    + (d.gpu ? ` — ${escapeHtml(d.gpu)}` : '')
-                    + ` at <code>${escapeHtml(d.address || '')}</code>`
-                    + (d.busy ? ' · <strong>busy</strong>' : '') + `</div>`;
-                if (!d.revision) {
-                    gpu += `<div class="mt-1 small text-warning"><i class="bi bi-question-circle"></i> `
-                        + `Worker reports no revision (old build). Run <code>./deploy.sh</code>.</div>`;
-                } else if (!d.revision_match) {
-                    gpu += `<div class="mt-1 small text-danger"><i class="bi bi-arrow-repeat"></i> `
-                        + `Revision drift: box <code>${escapeHtml(d.revision)}</code> vs host `
-                        + `<code>${escapeHtml(d.host_revision || '?')}</code>. Run <code>./deploy.sh</code>.</div>`;
-                }
-            }
-            return rows + gpu;
-        }
-
-        async function fetchRemoteStatus() {
-            try {
-                const result = await (await fetch('/api/remote/status')).json();
-                if (result.code !== 0) return;
-                const { credentials, tunnel: t, mode, address } = result.data;
-                renderRemoteBadge(t, credentials, mode);
-                renderWorkerMode(mode, address);
-                if (credentials && credentials.username) $('#sshUser').val(credentials.username);
-                if (credentials && credentials.host) $('#sshHost').val(credentials.host);
-                if (t && t.ssh_port) $('#sshPort').val(t.ssh_port);
-            } catch (err) {
-                console.error('Failed to fetch remote status', err);
-            }
-        }
-
-        // ─── compute mode toggle ─────────────────────────────────────────
-        // Every GPU task (inference, avatar generation, enhance) follows this
-        // one switch. It is persisted server-side and read per dispatch, so it
-        // applies to the next connect / task without a restart.
-        //
-        // The last server-confirmed mode is tracked here rather than read back
-        // from the radio: the browser flips `checked` BEFORE the change handler
-        // runs, so comparing against the DOM would always say "unchanged".
-        let appliedWorkerMode = null;
-
-        function renderWorkerMode(mode, address) {
-            const local = mode !== 'remote';
-            appliedWorkerMode = local ? 'local' : 'remote';
-            $('#modeLocal').prop('checked', local);
-            $('#modeRemote').prop('checked', !local);
-            // The host/login fields only matter in remote mode.
-            $('#workerFields').toggle(!local);
-            $('#modeLocalNote').prop('hidden', !local);
-            const hint = $('#workerModeHint');
-            if (local) {
-                hint.html('<i class="bi bi-cpu"></i> local — all GPU work on this machine');
-            } else if (!address) {
-                hint.html('<i class="bi bi-exclamation-triangle text-warning"></i> '
-                          + 'remote — no worker address yet; sessions will fail until you Connect');
-            } else {
-                hint.html('<i class="bi bi-check-circle text-success"></i> remote — '
-                          + escapeHtml(address));
-            }
-        }
-
-        async function setWorkerMode(mode) {
-            if (mode === appliedWorkerMode) return;
-            const previous = appliedWorkerMode || 'local';
-            if (mode === 'remote' && !confirm(
-                    'Send all GPU work (avatar inference, avatar generation, video enhance) '
-                    + 'to the remote CUDA box?')) {
-                $('#modeLocal').prop('checked', previous === 'local');
-                $('#modeRemote').prop('checked', previous === 'remote');
-                return;
-            }
-            try {
-                const resp = await fetch('/api/remote/mode', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ mode })
-                });
-                const result = await resp.json();
-                if (result.code !== 0) {
-                    showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(result.msg)}`,
-                                     'alert-danger');
-                    await fetchRemoteStatus();
-                    return;
-                }
-                const d = result.data;
-                let msg = d.mode === 'local'
-                    ? '<i class="bi bi-cpu"></i> GPU work now runs <strong>on this machine</strong>.'
-                    : '<i class="bi bi-gpu-card"></i> GPU work now runs on the '
-                      + '<strong>remote worker</strong>'
-                      + (d.address ? ` at <code>${escapeHtml(d.address)}</code>` : '')
-                      + (d.address ? '.' : ' — connect it below, or sessions will fail.');
-                if (d.reload_required) {
-                    // One message, not two: the second showRemoteResult would
-                    // replace the first and lose the mode confirmation.
-                    msg += `<div class="mt-2 text-warning"><i class="bi bi-exclamation-triangle"></i> `
-                         + `Mode saved, but <code>${escapeHtml(d.resident_backend || 'a model')}</code> `
-                         + `is still loaded. Unload the model (Model &amp; System Control) so the `
-                         + `next connect loads it in the new mode.</div>`;
-                }
-                showRemoteResult(msg, d.mode === 'local' ? 'alert-secondary' : 'alert-success');
-                await fetchRemoteStatus();
-                await fetchModelStatus();
-            } catch (err) {
-                showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(err)}`, 'alert-danger');
-                // The server mode did not change; put the radios back and let
-                // the status endpoint re-render the hint.
-                $('#modeLocal').prop('checked', previous === 'local');
-                $('#modeRemote').prop('checked', previous === 'remote');
-                await fetchRemoteStatus();
-            }
-        }
-
-        function remoteForm() {
-            return {
-                host: $('#sshHost').val().trim(),
-                username: $('#sshUser').val().trim(),
-                password: $('#sshPassword').val(),
-                port: parseInt($('#sshPort').val() || '22', 10)
-            };
-        }
-
-        async function connectRemote() {
-            const form = remoteForm();
-            if (!form.host || !form.username) {
-                showRemoteResult('<i class="bi bi-x-octagon"></i> host and username are required.', 'alert-warning');
-                return;
-            }
-            const btn = $('#btnConnect');
-            btn.prop('disabled', true);
-            showRemoteResult('<i class="bi bi-hourglass-split"></i> Connecting over SSH...', 'alert-secondary');
-            try {
-                const resp = await fetch('/api/remote/connect', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(form)
-                });
-                const result = await resp.json();
-                if (result.code !== 0) {
-                    showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(result.msg)}`, 'alert-danger');
-                    return;
-                }
-                const d = result.data;
-                $('#sshPassword').val('');   // never keep it in the DOM
-                showRemoteResult(renderSteps(d), d.ok ? 'alert-success' : 'alert-warning');
-                await fetchRemoteStatus();
-            } catch (err) {
-                showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(err)}`, 'alert-danger');
-            } finally {
-                btn.prop('disabled', false);
-            }
-        }
-
-        async function testSsh() {
-            const form = remoteForm();
-            if (!form.host) {
-                showRemoteResult('<i class="bi bi-x-octagon"></i> enter a host first.', 'alert-warning');
-                return;
-            }
-            const btn = $('#btnTestSsh');
-            btn.prop('disabled', true);
-            showRemoteResult('<i class="bi bi-hourglass-split"></i> Attempting SSH login...', 'alert-secondary');
-            try {
-                const body = { host: form.host, username: form.username, port: form.port };
-                if (form.password) body.password = form.password;   // else the keychain
-                const resp = await fetch('/api/remote/ssh-test', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body)
-                });
-                const result = await resp.json();
-                if (result.code !== 0) {
-                    showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(result.msg)}`, 'alert-danger');
-                    return;
-                }
-                const d = result.data;
-                if (d.ok) {
-                    const fp = d.fingerprint ? d.fingerprint.substring(0, 16) + '...' : '?';
-                    showRemoteResult(
-                        `<i class="bi bi-check-circle"></i> <strong>Login OK</strong> — ${escapeHtml(d.hostname || form.host)}`
-                        + `<div class="mt-1 small text-muted">host key ${escapeHtml(fp)}</div>`,
-                        'alert-success');
-                } else if (d.needs_trust) {
-                    showRemoteResult(
-                        `<i class="bi bi-shield-exclamation"></i> <strong>Host key not trusted</strong>`
-                        + `<div class="mt-1 small">${escapeHtml(d.message)}</div>`
-                        + `<div class="mt-1 small text-muted">Press Connect to trust and pin it.</div>`,
-                        'alert-warning');
-                } else {
-                    showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(d.message || 'failed')}`, 'alert-danger');
-                }
-            } catch (err) {
-                showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(err)}`, 'alert-danger');
-            } finally {
-                btn.prop('disabled', false);
-            }
-        }
-
-        async function disconnectRemote() {
-            const btn = $('#btnDisconnect');
-            btn.prop('disabled', true);
-            try {
-                const resp = await fetch('/api/remote/disconnect', { method: 'POST' });
-                const result = await resp.json();
-                if (result.code !== 0) {
-                    showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(result.msg)}`, 'alert-danger');
-                    return;
-                }
-                const t = result.data.tunnel || {};
-                // This process can only close a forward it spawned itself. One
-                // started by a terminal or by a previous server run keeps the port.
-                const external = t.listening && !t.running;
-                showRemoteResult(
-                    external
-                        ? '<i class="bi bi-exclamation-triangle"></i> Stopped forwarding, but something outside '
-                          + 'this server still listens on <code>' + escapeHtml(t.address || '50051') + '</code> '
-                          + '— a hand-started <code>ssh -L</code>, or a forward left over from an earlier run. '
-                          + 'Close it there if you want the worker unreachable.'
-                        : '<i class="bi bi-plug"></i> SSH tunnel closed. The saved login is kept — press Connect to reopen it.',
-                    external ? 'alert-warning' : 'alert-secondary');
-                await fetchRemoteStatus();
-            } catch (err) {
-                showRemoteResult(`<i class="bi bi-x-octagon"></i> ${escapeHtml(err)}`, 'alert-danger');
-            } finally {
-                btn.prop('disabled', false);
-            }
-        }
-
         $(document).ready(() => {
             fetchConfig();
             fetchSessions();
             fetchModelStatus();
-            fetchRemoteStatus();
 
             // Delegated: the session cards are re-rendered every 5 s, so a
             // per-card handler bound at render time would be re-bound forever.
@@ -863,16 +511,8 @@
                 killSession(sid, sid).finally(() => btn.prop('disabled', false));
             });
 
-            // Mode toggle: one switch for avatar inference, avatar generation
-            // and video enhance. Saved server-side; the server reads it per
-            // dispatch, so it applies to the next connect / task.
-            $('input[name="workerMode"]').on('change', function () {
-                setWorkerMode(this.value);
-            });
-
             setInterval(fetchSessions, 5000);
             setInterval(fetchModelStatus, 5000);
-            setInterval(fetchRemoteStatus, 10000);
         });
     </script>
 </body>
