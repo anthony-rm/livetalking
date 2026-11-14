@@ -9,8 +9,8 @@ avatar (face_imgs/, no latents.pt) against a musetalk-configured server:
     RuntimeError: Avatar 'anthony009' looks like a wav2lip avatar ...
 
 Now the backend is derived from each avatar's artifacts. These tests cover the
-detector, the connect-path dispatch, and the remote backend switching without a
-GPU box (clients stubbed at the RPC boundary).
+detector and the connect-path dispatch. Inference is always local: there is no
+remote backend to switch to any more.
 
 Run with the project interpreter:
     /opt/miniconda3/envs/livetalking/bin/python -m pytest tests/test_backend_detection.py
@@ -46,6 +46,25 @@ def _avatar(root, avatar_id, *, latents=False, mask=False, face=False,
         (path / "ultralight.pth").write_bytes(b"w")
     if info:
         (path / "avator_info.json").write_text("{}")
+    return path
+
+
+def _ditto_avatar(root, avatar_id, *, complete=True, marker=True, face=False):
+    """A ditto artifact: ditto.json + f_s/ + x_s_info/ + full_imgs/ + coords.pkl.
+
+    `complete=False` omits one payload dir so the partial-artifact path is
+    exercised; `face=True` adds face_imgs/ to reproduce the wav2lip collision.
+    """
+    path = _avatar(root, avatar_id, face=face)
+    if marker:
+        (path / "ditto.json").write_text('{"version": 1, "frame_count": 3}')
+    (path / "full_imgs").mkdir(exist_ok=True)
+    (path / "full_imgs" / "00000000.png").write_bytes(b"full")
+    if complete:
+        (path / "f_s").mkdir()
+        (path / "f_s" / "00000000.npy").write_bytes(b"fs")
+        (path / "x_s_info").mkdir()
+        (path / "x_s_info" / "00000000.npz").write_bytes(b"xs")
     return path
 
 
@@ -111,147 +130,98 @@ def test_real_repo_avatars_report_their_backend():
 def app_module(monkeypatch, tmp_path):
     """Import app with a stub opt and a temporary avatar root."""
     import app as app_mod
-    from remote import settings
 
     fake_opt = types.SimpleNamespace(
-        model="remote", remote_backend="musetalk", avatar_id="anthony007",
+        model="musetalk", avatar_id="anthony007",
         batch_size=8, fps=25, transport="webrtc", tts="edgedts",
         sessionid="s")
     monkeypatch.setattr(app_mod, "opt", fake_opt)
-    # The local/remote toggle (not --model) decides where GPU work runs.
-    monkeypatch.setattr(settings, "worker_mode", lambda: settings.MODE_REMOTE)
     # Point detection at the fixture root by patching the module constant the
     # detector reads.
     monkeypatch.setattr(detect, "DEFAULT_AVATAR_ROOT", str(tmp_path))
     return app_mod, fake_opt, tmp_path
 
 
-def test_remote_host_stays_remote_plugin_for_worker_backends(app_module):
+def test_resolves_each_avatar_to_its_own_backend(app_module):
+    """One server fronts a mixed data/avatars/ dir; the artifacts decide."""
     app_mod, _opt, root = app_module
     _avatar(root, "ms", latents=True, mask=True)
     _avatar(root, "w2l", face=True)
-    # In remote mode the HOST plugin is always 'remote'; the worker switches.
-    assert app_mod.resolve_avatar_backend("ms") == "remote"
-    assert app_mod.resolve_avatar_backend("w2l") == "remote"
-
-
-def test_remote_falls_back_to_local_for_a_backend_the_worker_cannot_run(
-        app_module, monkeypatch):
-    """ultralight is host-only: remote mode must not fail the whole toggle."""
-    app_mod, _opt, root = app_module
     _avatar(root, "ul", face=True, ultralight=True)
+    assert app_mod.resolve_avatar_backend("ms") == "musetalk"
+    assert app_mod.resolve_avatar_backend("w2l") == "wav2lip"
     assert app_mod.resolve_avatar_backend("ul") == "ultralight"
 
 
-def test_local_mode_switches_to_the_avatars_own_backend(app_module, monkeypatch):
-    from remote import settings
+def test_configured_model_does_not_override_the_artifacts(app_module):
+    """A musetalk-configured server must still load a wav2lip avatar."""
     app_mod, opt, root = app_module
-    opt.model = "musetalk"          # configured for musetalk ...
-    monkeypatch.setattr(settings, "worker_mode", lambda: settings.MODE_LOCAL)
-    _avatar(root, "w2l", face=True)  # ... but this avatar is wav2lip
+    opt.model = "musetalk"
+    _avatar(root, "w2l", face=True)
     assert app_mod.resolve_avatar_backend("w2l") == "wav2lip"
 
 
-def test_local_mode_rejects_an_unrecognizable_avatar(app_module, monkeypatch):
-    from remote import settings
-    app_mod, opt, root = app_module
-    opt.model = "musetalk"
-    monkeypatch.setattr(settings, "worker_mode", lambda: settings.MODE_LOCAL)
+def test_unrecognizable_avatar_is_rejected(app_module):
+    app_mod, _opt, root = app_module
     (root / "junk").mkdir()
     with pytest.raises(RuntimeError, match="cannot load avatar"):
         app_mod.resolve_avatar_backend("junk")
 
 
-def test_local_toggle_overrides_a_stale_remote_model(app_module, monkeypatch):
-    """`model: remote` in config.yaml must not outlive the toggle."""
-    from remote import settings
+def test_inference_is_never_dispatched_remotely(app_module):
+    """The worker split is gone; nothing may report remote any more."""
+    app_mod, _opt, _root = app_module
+    assert app_mod.worker_remote() is False
+
+
+def test_default_backend_is_a_real_local_backend(app_module):
+    """A stale `model: remote` must not survive as a backend name."""
     app_mod, opt, _root = app_module
-    monkeypatch.setattr(settings, "worker_mode", lambda: settings.MODE_LOCAL)
-    assert app_mod.default_backend() != "remote"
+    opt.model = "wav2lip"
+    assert app_mod.default_backend() == "wav2lip"
 
 
-# ─── remote backend switching (avatars/remote_avatar.py) ───────────────────
-class _FakeClient:
-    """Records the RPC sequence so the switch can be asserted."""
-
-    def __init__(self):
-        self.calls = []
-        self.loaded_backend = None
-
-    def wait_ready(self, deadline=30.0):
-        self.calls.append(("wait_ready",))
-        return {"device": "cuda", "detail": "fake-gpu", "backend": ""}
-
-    def load_model(self, backend):
-        self.calls.append(("load_model", backend))
-        self.loaded_backend = backend
-
-    def load_avatar(self, backend, avatar_id, frames):
-        self.calls.append(("load_avatar", backend, avatar_id))
-
-    def unload(self):
-        self.calls.append(("unload",))
+# ─── ditto ────────────────────────────────────────────────────────────────
+def test_detects_ditto_from_its_marker(tmp_path):
+    _ditto_avatar(tmp_path, "dt")
+    backend, reason = detect.detect_backend("dt", root=str(tmp_path))
+    assert backend == "ditto"
+    assert "ditto.json" in reason
 
 
-@pytest.fixture
-def remote_mod(monkeypatch):
-    import avatars.remote_avatar as ra
+def test_ditto_wins_over_wav2lip_when_face_imgs_are_present(tmp_path):
+    """The collision this rule exists for.
 
-    # Reset module state between tests.
-    monkeypatch.setattr(ra, "_client", None)
-    monkeypatch.setattr(ra, "_backend", "")
-    monkeypatch.setattr(ra, "_fallback_backend", "musetalk")
-    monkeypatch.setattr(ra, "_worker_avatar_id", "")
-    monkeypatch.setattr(ra, "_avatar_backends", {})
-
-    fake = _FakeClient()
-    monkeypatch.setattr(ra, "RemoteClient", lambda address, **kw: fake)
-    # A connect is never "live" in these unit tests.
-    import server.session_manager as sm
-    monkeypatch.setattr(sm.session_manager, "active_sessions", lambda: 0)
-    return ra, fake
+    A ditto tree can carry face_imgs/ as well; without checking ditto.json
+    first the directory would detect as wav2lip and then fail to load.
+    """
+    _ditto_avatar(tmp_path, "dt", face=True)
+    assert detect.detect_backend("dt", root=str(tmp_path))[0] == "ditto"
 
 
-def test_load_model_connects_without_priming_weights(remote_mod):
-    ra, fake = remote_mod
-    ra.load_model(types.SimpleNamespace(remote_backend="musetalk"))
-    # No LoadModel: the first avatar's artifacts decide the backend.
-    assert ("load_model", "musetalk") not in fake.calls
-    assert ("wait_ready",) in fake.calls
+def test_partial_ditto_artifact_is_named_not_guessed(tmp_path):
+    """A missing payload must report ditto + what is missing, not wav2lip."""
+    _ditto_avatar(tmp_path, "dt", complete=False)
+    backend, reason = detect.detect_backend("dt", root=str(tmp_path))
+    assert backend == "ditto"
+    assert "incomplete" in reason
+    assert "f_s" in reason or "x_s_info" in reason
 
 
-def test_switching_backend_reloads_worker_weights(remote_mod, monkeypatch):
-    ra, fake = remote_mod
-    monkeypatch.setattr(ra, "RemoteClient", lambda address, **kw: fake)
-    ra.load_model(types.SimpleNamespace(remote_backend="musetalk"))
-
-    ra._ensure_worker_backend("wav2lip")
-    assert ("load_model", "wav2lip") in fake.calls
-    assert ra._backend == "wav2lip"
-
-    # Re-requesting the same backend must not reload.
-    before = len(fake.calls)
-    ra._ensure_worker_backend("wav2lip")
-    assert len(fake.calls) == before
+def test_ultralight_still_wins_over_ditto_less_trees(tmp_path):
+    """Regression guard: the ditto rule must not shadow ultrafast layouts."""
+    _avatar(tmp_path, "ul", face=True, ultralight=True)
+    assert detect.detect_backend("ul", root=str(tmp_path))[0] == "ultralight"
 
 
-def test_switching_backend_is_refused_while_a_session_is_live(remote_mod, monkeypatch):
-    ra, fake = remote_mod
-    ra.load_model(types.SimpleNamespace(remote_backend="musetalk"))
-    ra._ensure_worker_backend("musetalk")
-
-    import server.session_manager as sm
-    monkeypatch.setattr(sm.session_manager, "active_sessions", lambda: 1)
-    with pytest.raises(RuntimeError, match="still connected"):
-        ra._ensure_worker_backend("wav2lip")
-    assert ra._backend == "musetalk"
+def test_ditto_is_a_known_backend():
+    assert "ditto" in detect.KNOWN_BACKENDS
 
 
-def test_unknown_worker_backend_is_rejected(remote_mod):
-    ra, _fake = remote_mod
-    ra.load_model(types.SimpleNamespace(remote_backend="musetalk"))
-    with pytest.raises(RuntimeError, match="cannot drive"):
-        ra._ensure_worker_backend("ultralight")
+def test_no_marker_means_no_ditto(tmp_path):
+    """Without ditto.json the tree falls through to the legacy rules."""
+    _ditto_avatar(tmp_path, "dt", marker=False, face=True)
+    assert detect.detect_backend("dt", root=str(tmp_path))[0] == "wav2lip"
 
 
 if __name__ == "__main__":

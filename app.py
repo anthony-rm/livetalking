@@ -114,15 +114,10 @@ _AVATAR_MODULES = {
     'musetalk':   'avatars.musetalk_avatar',
     'wav2lip':    'avatars.wav2lip_avatar',
     'ultralight': 'avatars.ultralight_avatar',
-    'remote':     'avatars.remote_avatar',
+    'ditto':      'avatars.ditto_avatar',
 }
 
-# Backends used by the remote WORKER (ultralight is host-only).
-_REMOTE_WORKER_BACKENDS = ('musetalk', 'wav2lip')
-
 # Which backend the in-memory `model` currently holds. '' until the first load.
-# For model=remote this is the HOST plugin name ('remote'); the worker-side
-# backend is tracked inside avatars/remote_avatar.py.
 model_backend = ''
 
 
@@ -136,32 +131,30 @@ def _bind_backend(backend: str):
 def _warm_up_for(backend, model_obj, avatar_payload):
     """Call the backend's warm_up with the argument shape it expects.
 
-    The four backends disagree: musetalk/remote take (batch, model), wav2lip
-    takes (batch, model, resolution), ultralight takes (batch, avatar, res).
-    Keeping the table here means adding a backend is one line, not another
-    elif-chain in two places.
+    The backends disagree: musetalk takes (batch, model), wav2lip takes
+    (batch, model, resolution), ultralight takes (batch, avatar, res),
+    ditto takes (batch, model). Keeping the table here means adding a backend
+    is one line, not another elif-chain in two places.
     """
     lm, la, warm_up = _bind_backend(backend)
     if backend == 'wav2lip':
         warm_up(opt.batch_size, model_obj, 256)
     elif backend == 'ultralight':
         warm_up(opt.batch_size, avatar_payload, 160)
-    else:  # musetalk, remote
+    else:  # musetalk, ditto
         warm_up(opt.batch_size, model_obj)
 
 
 def worker_remote() -> bool:
-    """True when GPU work should be dispatched to the remote worker.
+    """Always False.
 
-    This is the single decision point for the local/remote toggle: the value
-    saved in the admin console (or --worker_mode / LT_WORKER_MODE) decides it,
-    per call, so flipping the toggle takes effect on the next connect without a
-    restart. An address is NOT required to answer "remote" here -- an
-    unconfigured worker must fail loudly on connect, not silently run a
-    multi-hour job on this machine.
+    GPU work now runs in this process, always. The local/remote split existed to
+    send inference to a second machine; with the app itself installed on the GPU
+    box there is no second machine to send it to. Kept as a named hook so the
+    call sites that used to branch on it stay readable — and so a future
+    out-of-process worker has one place to come back.
     """
-    from remote import settings
-    return settings.worker_mode() == settings.MODE_REMOTE
+    return False
 
 
 def resolve_avatar_backend(avatar_id: str) -> str:
@@ -172,29 +165,16 @@ def resolve_avatar_backend(avatar_id: str) -> str:
     face_imgs/ => wav2lip, ultralight.pth => ultralight). Trusting --model
     blindly is what made connecting a wav2lip avatar to a musetalk server die on
     a missing latents.pt.
-
-    In remote mode the HOST plugin is 'remote' and the WORKER switches backend,
-    so the artifact must map to a worker-supported backend. An avatar only this
-    machine can drive (ultralight) still runs locally instead of failing the
-    whole toggle.
     """
     from avatars import detect as avatar_detect
     detected, reason = avatar_detect.detect_backend(avatar_id)
     if detected is None:
         raise RuntimeError(f"cannot load avatar '{avatar_id}': {reason}")
-    if not worker_remote():
-        if detected != opt.model:
-            logger.info('[model] avatar %r belongs to backend %r, not the '
-                        'configured %r -- switching (%s)',
-                        avatar_id, detected, opt.model, reason)
-        return detected
-    # Remote mode: the plugin is always 'remote'; the worker needs a backend it
-    # can run.
-    if detected not in _REMOTE_WORKER_BACKENDS:
-        logger.info('[model] avatar %r needs backend %r, which the worker cannot '
-                    'drive -- loading it locally (%s)', avatar_id, detected, reason)
-        return detected
-    return 'remote'
+    if detected != getattr(opt, 'model', ''):
+        logger.info('[model] avatar %r belongs to backend %r, not the '
+                    'configured %r -- switching (%s)',
+                    avatar_id, detected, getattr(opt, 'model', ''), reason)
+    return detected
 
 
 def _load_avatar_payload(backend: str, avatar_id: str):
@@ -216,13 +196,13 @@ def _load_backend_weights(backend: str):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     load_model, _load_avatar, _warm_up = _bind_backend(backend)
-    # The four load_model() signatures disagree: musetalk takes nothing, wav2lip
-    # wants the checkpoint path, ultralight/remote take opt.
-    if backend == 'musetalk':
+    # The load_model() signatures disagree: musetalk/ditto take nothing, wav2lip
+    # wants the checkpoint path, ultralight takes opt.
+    if backend in ('musetalk', 'ditto'):
         model = load_model()
     elif backend == 'wav2lip':
         model = load_model("./models/wav2lip.pth")
-    else:  # ultralight, remote
+    else:  # ultralight
         model = load_model(opt)
     model_backend = backend
 
@@ -230,18 +210,10 @@ def _load_backend_weights(backend: str):
 def default_backend() -> str:
     """The backend to load when the caller did not name one.
 
-    --model is a default, not a switch: with `model: remote` in config.yaml a
-    server toggled back to local must load a real local backend (and vice
-    versa), otherwise the toggle would still create RemoteAvatar sessions.
+    --model is a default, not a switch: with an unusable value in config.yaml
+    the server must still load a real local backend.
     """
     configured = (opt.model if opt else '') or 'wav2lip'
-    if worker_remote():
-        return 'remote'
-    if configured == 'remote':
-        # 'remote' names no local backend; _REMOTE_WORKER_BACKENDS[0]-style
-        # guessing is wrong (the avatar's artifacts decide later anyway), so
-        # start from the configured worker backend, which is a real one.
-        return getattr(opt, 'remote_backend', '') or 'musetalk'
     return configured
 
 
@@ -270,7 +242,7 @@ def ensure_model_loaded(backend: str | None = None, avatar_id: str | None = None
     `avatar_id` is the avatar to load and warm up for that backend.
 
     The lock guards state transitions only -- never the load itself. Holding it
-    across a multi-second (or multi-minute, remote) load would make every other
+    across a multi-second load would make every other
     connect block on the mutex instead of on model_ready_event, and made the
     original "someone else is loading" branch unreachable.
     """
@@ -351,12 +323,6 @@ def _unload_model_locked(force: bool) -> str:
             return 'model already unloaded'
         model = None
         global_avatars.clear()
-        if model_backend == 'remote':
-            try:
-                from avatars.remote_avatar import unload_remote
-                unload_remote()
-            except Exception:  # noqa: BLE001
-                logger.warning('[model] remote worker unload failed', exc_info=True)
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -418,9 +384,9 @@ def _build_avatar_session_locked(sessionid:str, params:dict)->BaseAvatar:
 
     # Pick the model from the AVATAR's artifacts, not from --model. A single
     # server fronts a mixed data/avatars/ directory, so connecting a wav2lip
-    # avatar to a musetalk-configured server must load wav2lip (or, in remote
-    # mode, switch the worker) instead of failing on a missing latents.pt.
-    plugin = resolve_avatar_backend(avatar_id)          # 'musetalk'|'wav2lip'|...|'remote'
+    # avatar to a musetalk-configured server must load wav2lip instead of failing
+    # on a missing latents.pt.
+    plugin = resolve_avatar_backend(avatar_id)          # 'musetalk'|'wav2lip'|'ultralight'
     ensure_model_loaded(plugin, avatar_id)
 
     if avatar_id not in global_avatars:
@@ -459,95 +425,18 @@ async def download_record(request):
         return web.Response(status=404, text="Record not found")
 
 
-def _announce_remote(opt):
-    """Log what the remote GPU worker is, in the background, at startup.
-
-    The worst failure mode of the host/worker split is silent: the server boots
-    happily and the first browser connect is what discovers the worker is down,
-    on the wrong revision, or CPU-only. Probing at startup turns that into a log
-    line you see immediately. It runs in a daemon thread with a short timeout so
-    a dead box never delays the HTTP listener.
-    """
-    from remote import revision, settings
-    address, source = settings.effective()
-    if not address:
-        logger.error(
-            '[remote] worker mode is remote but NO worker address is configured. '
-            'Set it in /admin.html (Remote GPU Worker) or in config.yaml. '
-            'Sessions will fail until then.')
-        return
-    local_rev = revision.current_revision()
-    logger.info('[remote] worker mode (local/remote toggle = remote); worker=%s '
-                '(source: %s), local revision %s',
-                address, source, local_rev or 'unknown')
-
-    if settings.tunnel_enabled():
-        from remote import tunnel
-        # The worker binds loopback on the box, so the only route is the tunnel.
-        # Started here (not lazily on first connect) so the browser never waits
-        # on an SSH handshake, and supervised in the background so a dropped
-        # link is repaired instead of silently killing every later session.
-        tunnel.start_background_supervisor()
-
-    def _probe():
-        from remote.client import probe
-        try:
-            info = probe(address, timeout=6.0)
-        except Exception as exc:  # noqa: BLE001
-            logger.error('[remote] worker %s is NOT reachable: %s. Start it on the '
-                         'box, or run ./deploy.sh here to redeploy and restart it.',
-                         address, exc)
-            return
-        if info.get('device') != 'cuda':
-            logger.warning('[remote] worker %s reports device=%r, not cuda -- '
-                           'inference will be slow', address, info.get('device'))
-        remote_rev = info.get('revision') or ''
-        if not remote_rev:
-            logger.warning('[remote] worker reports no revision (old build); run '
-                           './deploy.sh to bring it up to date')
-        elif not revision.matches(remote_rev, local_rev):
-            logger.warning('[remote] worker serves %s but this checkout is %s -- '
-                           'run ./deploy.sh to sync the box', remote_rev, local_rev)
-        else:
-            logger.info('[remote] worker %s ready: %s, revision %s',
-                        address, info.get('detail') or info.get('device'), remote_rev)
-
-    Thread(target=_probe, daemon=True).start()
-
-
 def main():
     global rtc_manager, opt, model, load_avatar, load_model, warm_up
     # 解析命令行参数
     from config import parse_args
     opt = parse_args()
 
-    # --remote_worker is the single knob for both inference and enhancement:
-    # publish it as env so server/enhance_routes.py (no access to opt) and the
-    # remote avatar plugin both pick it up.
-    if getattr(opt, 'remote_worker', ''):
-        os.environ['LT_REMOTE_WORKER'] = opt.remote_worker
-
-    # The local/remote toggle. Order of precedence is saved UI value > env >
-    # CLI, and the saved value lives in remote/settings.py; --worker_mode only
-    # supplies the fallback, which is why it is recorded as a default rather
-    # than written to the settings file.
-    from remote import settings as remote_settings
-    remote_settings.set_default_mode(getattr(opt, 'worker_mode', 'local'))
-    if opt.model == 'remote':
-        # Legacy shorthand: `model: remote` / `--model remote` predates the
-        # toggle and still means "use the worker".
-        remote_settings.set_default_mode('remote')
-
-    # The configured model must agree with the toggle: a stale `model: remote`
-    # in config.yaml must not keep creating RemoteAvatar sessions after the
-    # toggle says local (and vice versa).
-    if worker_remote():
-        opt.model = 'remote'
-    elif opt.model == 'remote':
-        opt.model = getattr(opt, 'remote_backend', '') or 'musetalk'
-    logger.info('[model] worker mode: %s (GPU work runs %s)',
-                remote_settings.worker_mode(),
-                'on the remote box' if worker_remote() else 'locally')
+    # A stale `model: remote` in an old config.yaml names a backend that no
+    # longer exists; fall back to a real local one instead of failing at load.
+    if getattr(opt, 'model', '') == 'remote':
+        opt.model = 'musetalk'
+    logger.info('[model] backend: %s (inference runs in this process)',
+                opt.model)
 
     _write_pidfile()
     atexit.register(_remove_pidfile)
@@ -584,11 +473,6 @@ def main():
     if opt.skip_model:
         logger.info('[--skip-model] kept for compatibility; model loading is '
                     'lazy-on-first-connect by default now.')
-
-    # model=remote means this process is a HOST for the GPU box: say so at
-    # startup instead of letting the first browser connect discover it.
-    if opt.model == 'remote':
-        _announce_remote(opt)
 
     # init rtc manager
     session_manager.set_max_session(opt.max_session)

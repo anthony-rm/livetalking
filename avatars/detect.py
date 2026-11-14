@@ -6,10 +6,15 @@ also absent on older artifacts, so the directory layout is the ground truth:
 
     ultralight   ultralight.pth + face_imgs/ + full_imgs/ + coords.pkl
     musetalk     latents.pt + mask/ + mask_coords.pkl + full_imgs/ + coords.pkl
+    ditto        ditto.json + f_s/ + x_s_info/ + full_imgs/ + coords.pkl
     wav2lip      face_imgs/ + full_imgs/ + coords.pkl
 
 wav2lip and ultralight both have ``face_imgs/``, so ``ultralight.pth`` must be
-checked before falling back to wav2lip. Detection is read-only and cheap (a few
+checked before falling back to wav2lip. ditto shares ``full_imgs/`` and
+``coords.pkl`` but not ``face_imgs/``; its ``ditto.json`` marker is checked
+first, because a partial ditto tree would otherwise be misread.
+
+Detection is read-only and cheap (a few
 ``os.path.exists`` calls): the connect path calls it before loading anything.
 """
 from __future__ import annotations
@@ -19,7 +24,7 @@ from typing import Optional, Tuple
 
 # Backends the server can drive. Order matters only for documentation; the
 # detection rules below are explicit.
-KNOWN_BACKENDS = ("musetalk", "wav2lip", "ultralight")
+KNOWN_BACKENDS = ("musetalk", "wav2lip", "ultralight", "ditto")
 
 DEFAULT_AVATAR_ROOT = "./data/avatars"
 
@@ -55,6 +60,20 @@ def detect_backend(avatar_id: str,
     if not os.path.isdir(path):
         return None, f"avatar directory {path} does not exist"
 
+    # Ditto first, and before any face_imgs/ test: a ditto artifact also ships
+    # full_imgs/ + coords.pkl for paste-back, so without this rule it would read
+    # as wav2lip and then fail on a missing face_imgs/ payload. ditto.json is
+    # the explicit marker (it also carries the f_s dtype and render size the
+    # loader needs), so its presence is authoritative.
+    has_ditto_json = os.path.exists(os.path.join(path, "ditto.json"))
+    if has_ditto_json:
+        missing = [p for p in ("f_s", "x_s_info", "full_imgs")
+                   if not os.path.exists(os.path.join(path, p))]
+        if missing:
+            return "ditto", (f"found ditto.json but missing {', '.join(missing)} "
+                             f"— the artifact is incomplete")
+        return "ditto", "found ditto.json + f_s/ + x_s_info/ + full_imgs/"
+
     # Ultralight first: it shares face_imgs/ with wav2lip.
     if os.path.exists(os.path.join(path, "ultralight.pth")):
         return "ultralight", "found ultralight.pth"
@@ -79,7 +98,8 @@ def detect_backend(avatar_id: str,
 
     return None, (f"no recognizable artifact layout in {path} "
                   f"(expected latents.pt+mask/ for musetalk, "
-                  f"face_imgs/ for wav2lip, or ultralight.pth)")
+                  f"face_imgs/ for wav2lip, ultralight.pth, "
+                  f"or ditto.json for ditto)")
 
 
 def detect_backend_or_none(avatar_id: str,

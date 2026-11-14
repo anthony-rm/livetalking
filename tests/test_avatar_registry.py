@@ -14,7 +14,7 @@ from server import enhance_routes as er
 class AvatarRegistryTests(unittest.TestCase):
     def test_registry_lists_both_generators(self):
         ids = [m["id"] for m in ar.avatar_generators()]
-        self.assertEqual(ids, ["wav2lip", "musetalk"])
+        self.assertEqual(ids, ["wav2lip", "musetalk", "ditto"])
         self.assertEqual(ar.DEFAULT_GENERATOR, "wav2lip")
 
     def test_every_param_declares_type_and_default(self):

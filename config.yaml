@@ -9,18 +9,12 @@ m: 8
 r: 10
 
 # -------- Avatar Model ----------------------------------------------------------
-# Default is fully LOCAL: GPU work (avatar inference + enhance) runs on this
-# machine. Flip the toggle in /admin.html (or set `worker_mode: remote` here /
-# LT_WORKER_MODE=remote) to send it to the remote CUDA box described in
-# docs/remote-gpu.md. The UI value wins over this file, and over the CLI.
-# `model` is the default backend for local mode; the avatar's own artifacts
-# still decide which backend actually loads.
-worker_mode: local               # local / remote  — where ALL GPU work runs
+# GPU work (avatar inference + enhance) runs in this process, on this machine.
+# There is no remote worker any more: the app is installed on the GPU box and a
+# browser reaches it over an SSH tunnel (`ssh -L 8010:127.0.0.1:8010`).
+# `model` is the default backend; the avatar's own artifacts still decide which
+# backend actually loads.
 model: musetalk
-remote_backend: musetalk         # backend the WORKER runs when worker_mode=remote (musetalk / wav2lip)
-remote_worker: 10.130.105.203:50051   # worker gRPC address. A value saved in
-                              # /admin.html wins over this one; so does
-                              # LT_REMOTE_WORKER in the environment.
 avatar_id: anthony007
 # benchmark_batchsize.py (M2 Air, fp16): bs8=22.5fps  bs16=17.7fps  bs32=14.0fps
 batch_size: 8

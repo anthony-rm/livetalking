@@ -45,6 +45,16 @@ AVATAR_GENERATORS = {
              "default": "v15", "options": ["v15", "v1"]},
         ],
     },
+    "ditto": {
+        "label": "Ditto",
+        "modules": "avatars/ditto/genavatar.py",
+        "params": [
+            {"name": "max_frames", "label": "Max registered frames", "type": "int",
+             "default": 75, "min": 1, "max": 300,
+             "hint": "Caps the registered clip. The appearance volume is "
+                     "~4.2 MB/frame on disk, so 75 frames ≈ 315 MB."},
+        ],
+    },
 }
 
 DEFAULT_GENERATOR = "wav2lip"
