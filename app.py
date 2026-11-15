@@ -473,6 +473,22 @@ def main():
     if opt.skip_model:
         logger.info('[--skip-model] kept for compatibility; model loading is '
                     'lazy-on-first-connect by default now.')
+    else:
+        # Eager warm start: the weights no longer consume VRAM while idle
+        # (unload_model is a config away), and first click otherwise pays the
+        # full load (~14 s measured) while the user stares at a spinner. Load
+        # in a daemon thread so HTTP binds immediately; a connect that wins
+        # the race simply waits on the same lock the lazy path uses.
+        def _eager_load():
+            try:
+                backend = getattr(opt, 'model', '') or default_backend()
+                avatar_id = getattr(opt, 'avatar_id', '') or None
+                ensure_model_loaded(backend, avatar_id)
+                logger.info('[model] warm start complete')
+            except Exception:
+                logger.exception('[model] warm start failed; will retry on '
+                                 'first connect')
+        Thread(target=_eager_load, daemon=True).start()
 
     # init rtc manager
     session_manager.set_max_session(opt.max_session)

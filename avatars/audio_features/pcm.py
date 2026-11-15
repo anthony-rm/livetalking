@@ -221,17 +221,28 @@ class PcmASR(BaseASR):
 def make_ditto_feat_fn(
     model_path: str,
     device: str = "cuda",
+    _shared: dict = {},
 ) -> FeatFn:
     """Wrap Ditto's own HuBERT ONNX as a plain ``window -> features`` callable.
 
     Kept out of `PcmASR` so the windowing logic is importable (and testable) on
-    a machine without onnxruntime-gpu or the 1.46 GB checkpoint. Upstream's
-    `HubertStreaming` owns a streaming KV cache, so one instance is stateful and
-    must not be shared between sessions.
+    a machine without onnxruntime-gpu or the 1.46 GB checkpoint.
+
+    The ONNX is STATELESS: one input (``input_values``), one output, no
+    past-KV tensors in the graph signature, and interleaving two streams
+    through one session reproduces fresh-session results bit-identically (the
+    ``fix_kv`` in the filename means the KV is baked into the graph, not that
+    state is carried between calls). Sessions therefore SHARE the ORT session
+    keyed by (path, device): one 1.46 GB load at the first session instead of
+    per-connect reloads.
     """
     from core.aux_models.hubert_stream import HubertStreaming
 
-    hubert = HubertStreaming(model_path=model_path, device=device)
+    key = (model_path, device)
+    hubert = _shared.get(key)
+    if hubert is None:
+        hubert = HubertStreaming(model_path=model_path, device=device)
+        _shared[key] = hubert
 
     def feat_fn(window: NDArray[np.float32]) -> NDArray[np.float32]:
         # Verbatim geometry from Wav2FeatHubert.__call__: the KV-cache run
