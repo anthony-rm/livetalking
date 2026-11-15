@@ -503,19 +503,37 @@ class BaseAvatar:
         queue is empty we push silence so the track never starves. That silence
         is a real 320-sample zero chunk, not a dropped frame, so the browser's
         jitter buffer sees a steady stream and does not stretch or conceal.
+
+        Set LT_AUDIO_TRACE=1 to log the queue depth every 500 ms: a depth that
+        falls to 0 during speech means audio is produced slower than the 50 Hz
+        clock consumes it, and the silence below is being spliced into words.
         """
-        chunk = np.zeros(self.asr.chunk, dtype=np.int16)
+        silence = np.zeros(self.asr.chunk, dtype=np.int16)
+        chunk = silence
         userdata = None
         period = 1.0 / 50.0
         next_tick = time.perf_counter()
+        trace = os.environ.get("LT_AUDIO_TRACE") == "1"
+        _next_report = next_tick + 0.5
+        _dry = 0
+        _pushed = 0
         while not quit_event.is_set():
             try:
                 chunk, userdata = self.audio_out_queue.get(block=True, timeout=0.01)
+                _pushed += 1
             except queue.Empty:
-                pass
+                _dry += 1
+                chunk, userdata = silence, None
             self.output.push_audio_frame(chunk, userdata)
             next_tick += period
             now = time.perf_counter()
+            if trace and now >= _next_report:
+                asr = getattr(self, "asr", None)
+                qfeat = asr.feat_queue.qsize() if asr is not None else -1
+                logger.info("[audio] depth=%d dry=%d real=%d qfeat=%d",
+                            self.audio_out_queue.qsize(), _dry, _pushed, qfeat)
+                _dry = _pushed = 0
+                _next_report = now + 0.5
             wait = next_tick - now
             if wait > 0:
                 time.sleep(wait)
@@ -599,8 +617,14 @@ class BaseAvatar:
                     # at 50 Hz on its own clock. Pushing directly here made audio
                     # advance in lockstep with video frames (2 chunks per frame),
                     # so at 21 fps the track got 42 chunks/sec and stalled.
+                    #
+                    # Synthetic silence (type=1) must NOT be enqueued: the pacing
+                    # thread emits identical zero chunks whenever the queue runs
+                    # dry, and enqueuing them here built a silent backlog (up to
+                    # 200 chunks = 4 s) that real speech then queued behind.
                     frame = (audio_frame.data * 32767).astype(np.int16)
-                    self.audio_out_queue.put((frame, audio_frame.userdata))
+                    if audio_frame.type != 1:
+                        self.audio_out_queue.put((frame, audio_frame.userdata))
                     self.record_audio_data(frame)
                     
                 # if self.opt.transport == 'virtualcam' and hasattr(self.output, '_cam') and self.output._cam:
