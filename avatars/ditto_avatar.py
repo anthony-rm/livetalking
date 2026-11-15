@@ -389,6 +389,10 @@ class DittoReal(BaseAvatar):
             return frame
         if pred_frame.ndim == 2:
             pred_frame = cv2.cvtColor(pred_frame, cv2.COLOR_GRAY2BGR)
+        else:
+            # The decoder returns RGB (upstream contract); the artifact frames
+            # are cv2.imread BGR. Upstream's putback converts before warping.
+            pred_frame = cv2.cvtColor(pred_frame, cv2.COLOR_RGB2BGR)
         h, w = frame.shape[:2]
         if self._mask_cache is None or \
                 self._mask_cache.shape[:2] != pred_frame.shape[:2]:
