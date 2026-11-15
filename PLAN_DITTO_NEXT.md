@@ -235,6 +235,91 @@ STATUS 2026-11-14 late: **decoder + warp BOTH on TRT 10, end-to-end measured.**
 - Box reboots by the teacher on crash ("崩了后短信给我重启吧") — expect uptime
   resets; /tmp loss; always `free -m` + `nvidia-smi` first.
 
+# PLAN_DITTO_SESSION_4 — resume point (end of 2026-11-15)
+
+## Landed and verified this session (pushed to origin/main)
+
+Blue-face fix, paste-back perf, and the audio-pacing fix are all in, tested,
+and running on the box (server pid on 127.0.0.1:8010, `ditto_real_v2`, state
+ready). Commits: `fa19c3b` (RGB->BGR), `ccf42a3` (geometry cache),
+`795303a` (pacing stale chunk).
+
+- **Blue face: FIXED and verified numerically.** The decoder returns RGB, the
+  artifact frames are BGR. At the mask core the source frame measures
+  R-B=+61.7 and the pasted frame +55.9; a channel swap would invert that sign.
+  musetalk is unaffected (its `decode_latents` already returns BGR at
+  `avatars/musetalk/models/vae.py:107`), so the fix is ditto-only and sits in
+  `paste_back_frame`. Covered by `tests/test_ditto_paste_back.py` (6 tests, no
+  weights/GPU); the colour test fails without the fix, so it has teeth.
+- **Paste-back perf: 41.6 -> 14.3 ms/frame** (1080x1920) by warping only the
+  mapped bbox and blending with `cv2.blendLinear`. Bug caught while writing it:
+  `M[:2]` is a contiguous view, so `np.ascontiguousarray` returned the SAME
+  memory and the in-place bbox shift corrupted `M_c2o_list` — now `M[:2].copy()`,
+  covered by a test.
+- **Wired probe on HEAD code: 73.3 ms/frame** (58 batches, 580 frames, real
+  audio, real avatar, all three TRT-10 lanes) — matches the recorded 73.7.
+
+## Audio: root causes MEASURED, one fixed, one structural
+
+Instrumented with `LT_AUDIO_TRACE=1` (logs depth / dry / real every 500 ms).
+
+1. **FIXED — silent backlog ahead of speech.** `process_frames` enqueued
+   synthetic silence (type=1) into `audio_out_queue`, building up to 200 chunks
+   (4 s) of zeros that arriving TTS speech queued behind. Trace showed depth
+   58->111 before the first speech chunk. Now only real audio is enqueued (the
+   pacer synthesises identical zeros on demand); speech starts the tick after
+   the 'start' event.
+2. **FIXED — the pacer re-pushed a stale chunk.** On `queue.Empty` the code
+   left `chunk` bound to the previous chunk and pushed it again, repeating the
+   last 20 ms instead of inserting silence (its own docstring said otherwise).
+3. **STRUCTURAL, still open — audio production is capped at 2 x render fps.**
+   One batch renders `batch_size` (10) frames in ~730 ms but releases only 20
+   chunks = 400 ms of speech. Measured during speech: **23.8 real chunks/s
+   against the 50/s the track consumes, depth pinned at 0-1, ~40-70% of the
+   track spliced silence.** Video packet delivery is fine (24.8 fps, audio
+   49.7 fps at the client), so this is a CONTENT-rate mismatch: at 13.6 fps the
+   picture falls ~0.46 s behind per second of speech. **No buffering change can
+   fix it — the render must exceed 25 fps.**
+
+Latency split, measured: edge-tts 1.6-2.1 s, `/human` returns in ~0 ms (TTS is
+async), first frame ~2-3 s after connect (model load), and the ~2 s of silence
+backlog is now gone.
+
+## NEXT SESSION TASKS (in order)
+
+1. **Raise render throughput past 25 fps — the only real fix for "laggy audio".**
+   Levers in order: (a) `render_size=256`, which §5 flags as needing a
+   registration-level recheck (`f_s` is FIXED (32,16,64,64) in artifact.py, so a
+   256 render is a WARP-output change, not an `f_s` change — verify the bbox and
+   `M_c2o` mapping before coding); (b) batch warp+decode across the 10-frame
+   window (needs dynamic-batch engines); (c) fp16 putback. Current per-frame:
+   LMDM ~9 + warp ~24 + decode ~31 + stitch/cond/queue ~10 = ~73 ms.
+2. **Decide the A/V policy if 25 fps is unreachable.** Alternatives to
+   stretching speech: drop video frames to keep real-time audio (audio master,
+   video best-effort), which is what a video call does. Needs a user decision,
+   not a code guess.
+3. **Real-browser human check** of the blue face + audio (the headless gates
+   prove packet rates, not what the eye sees). Chrome mic permission is still
+   mandatory for ICE — never remove the `getUserMedia` call.
+4. Optional: `test_audio_pacing`'s two 50 Hz count assertions are load-flaky
+   (they fail on the original code too); consider relaxing them to a range or
+   marking them as timing tests.
+
+## Traps confirmed again this session
+
+- `pkill -f "app.py --transport"` over SSH kills the SSH wrapper itself
+  (exit 255, command never returns). Use
+  `ss -ltnp | grep 8010` to get the pid, then `kill <pid>`.
+- The box's `run.sh` hardcodes `/opt/miniconda3/...`; always pass
+  `LT_PYTHON=$HOME/miniconda3/envs/livetalking/bin/python`.
+- `restart.sh` is fine but leaves the foreground SSH hanging when backgrounded
+  with `nohup ... &` inside a remote command — expect the local call to hit its
+  timeout while the server is actually up; poll `/api/model/status` separately.
+- Box uptime survived the whole session (2 d 8 h) — /tmp probes were all still
+  there. Reachability is still school-LAN only.
+
+---
+
 # PLAN_DITTO_SESSION_3 — resume point (end of 2026-11-14, evening session)
 
 ## Current advancement (all VERIFIED, nothing below is speculation)
