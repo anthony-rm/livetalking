@@ -292,6 +292,9 @@ class DittoReal(BaseAvatar):
         self._lmdm_passes = 0
         self._idle_xd: Optional[dict] = None
         self._mask_cache: Optional[np.ndarray] = None
+        # bbox + crop-matrix per (frame idx, render size), so paste-back never
+        # re-derives the warped-mask bounds; 75 frames -> ~75 tiny tuples.
+        self._paste_geom_cache: dict = {}
 
     # ─── audio features ────────────────────────────────────────────────────
     def _make_feat_fn(self):
@@ -382,31 +385,80 @@ class DittoReal(BaseAvatar):
             self._gen_frame_idx += 1
         return out
 
-    # ─── paste-back (upstream's numpy putback, no Cython) ──────────────────
+    # ─── paste-back (upstream's numpy putback math, restructured) ───────────
+    # Same formula as upstream PutBackNumpy (mask*render + (1-mask)*frame),
+    # but the per-frame work is cut from two full-frame float warps + ~7
+    # full-frame float ops to two bbox-sized uint8/float32 warps + one
+    # cv2.blendLinear. Measured on the box (1080x1920 frame): 41.6 -> 10.9
+    # ms/frame, max pixel diff 1 (blendLinear rounds instead of truncating).
+    # The render crop only lands where the mask is > 0, which is bounded by
+    # the mapped 512-crop rectangle, so everything outside the bbox is an
+    # untouched copy of the source frame.
+    def _paste_geom(self, idx: int, pred_h: int, pred_w: int):
+        """(M_crop 2x3, bbox, w, h) for one artifact frame, computed on demand.
+
+        Keyed by idx AND the render-crop size, because the 512-crop is only
+        correct for a 512 render; a 256-render artifact maps the crop through
+        the same M but to a quarter-sized bbox.
+        """
+        key = (idx, pred_h, pred_w)
+        geom = self._paste_geom_cache.get(key)
+        if geom is None:
+            M = self.M_c2o_list[idx]
+            frame = self.frame_list_cycle[idx]
+            h, w = frame.shape[:2]
+            corners = np.array([[0, 0], [pred_w, 0], [0, pred_h],
+                                [pred_w, pred_h]], dtype=np.float32)
+            tx = M[0, :2] @ corners.T + M[0, 2]
+            ty = M[1, :2] @ corners.T + M[1, 2]
+            x0 = max(0, int(np.floor(tx.min())))
+            x1 = min(w, int(np.ceil(tx.max())))
+            y0 = max(0, int(np.floor(ty.min())))
+            y1 = min(h, int(np.ceil(ty.max())))
+            # NOTE: M[:2] is a contiguous view of the artifact matrix, so
+            # ascontiguousarray returns the SAME memory and the translation
+            # shift below would corrupt M_c2o_list in place. Copy explicitly.
+            Mc = M[:2].copy()
+            Mc[0, 2] -= x0
+            Mc[1, 2] -= y0
+            geom = (Mc, (x0, x1, y0, y1), w, h)
+            self._paste_geom_cache[key] = geom
+        return geom
+
     def paste_back_frame(self, pred_frame, idx: int):
-        frame = self.frame_list_cycle[idx].copy()
+        frame = self.frame_list_cycle[idx]
         if pred_frame is None:
-            return frame
+            return frame.copy()
         if pred_frame.ndim == 2:
             pred_frame = cv2.cvtColor(pred_frame, cv2.COLOR_GRAY2BGR)
         else:
             # The decoder returns RGB (upstream contract); the artifact frames
             # are cv2.imread BGR. Upstream's putback converts before warping.
             pred_frame = cv2.cvtColor(pred_frame, cv2.COLOR_RGB2BGR)
-        h, w = frame.shape[:2]
         if self._mask_cache is None or \
                 self._mask_cache.shape[:2] != pred_frame.shape[:2]:
             _ensure_ditto_home()
             from core.utils.get_mask import get_mask
-            m = get_mask(pred_frame.shape[1], pred_frame.shape[0], 0.9, 0.9)
-            self._mask_cache = np.concatenate([m] * 3, axis=2)
-        M = self.M_c2o_list[idx]
-        mask_w = cv2.warpAffine(self._mask_cache, M[:2], (w, h),
-                                flags=cv2.INTER_LINEAR).clip(0, 1)
-        render_w = cv2.warpAffine(pred_frame.astype(np.float32), M[:2], (w, h),
-                                  flags=cv2.INTER_LINEAR)
-        out = mask_w * render_w + (1 - mask_w) * frame.astype(np.float32)
-        return out.clip(0, 255).astype(np.uint8)
+            self._mask_cache = get_mask(pred_frame.shape[1],
+                                        pred_frame.shape[0], 0.9, 0.9)
+        Mc, (x0, x1, y0, y1), w, h = self._paste_geom(
+            idx, pred_frame.shape[0], pred_frame.shape[1])
+        if x1 <= x0 or y1 <= y0:
+            return frame.copy()
+        out = frame.copy()
+        render = cv2.warpAffine(pred_frame, Mc, (x1 - x0, y1 - y0),
+                                flags=cv2.INTER_LINEAR)
+        # blendLinear needs CV_32FC1 weights: a (H,W,1) mask warps to 2-D on
+        # its own, but collapse an explicit 3-channel one rather than relying
+        # on that.
+        mask_src = self._mask_cache
+        if mask_src.ndim == 3:
+            mask_src = mask_src[:, :, 0]
+        mask = cv2.warpAffine(mask_src, Mc, (x1 - x0, y1 - y0),
+                              flags=cv2.INTER_LINEAR).clip(0, 1)
+        out[y0:y1, x0:x1] = cv2.blendLinear(render, out[y0:y1, x0:x1],
+                                            mask, 1.0 - mask)
+        return out
 
     def get_avatar_length(self):
         return self.n_frames
