@@ -540,14 +540,13 @@ class BaseAvatar:
         logger.info('baseavatar audio pacing thread stop')
 
     def process_frames(self,quit_event):
-        enable_transition = False  # 设置为False禁用过渡效果，True启用
+        enable_transition = True  # 渐隐过渡：说话/静音两路来自不同的图像，硬切会有跳变
+        _transition_duration = 0.15  # 12 fps render 下约 2 帧中间帧
+        _last_silent_frame = None
+        _last_speaking_frame = None
         
         _last_speaking = False
         _transition_start = time.time()
-        if enable_transition:
-            _transition_duration = 0.1  # 过渡时间
-            _last_silent_frame = None  # 静音帧缓存
-            _last_speaking_frame = None  # 说话帧缓存
 
         self.output.start()
         

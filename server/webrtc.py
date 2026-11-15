@@ -58,6 +58,9 @@ class PlayerStreamTrack(MediaStreamTrack):
         self._queue = queue.Queue(maxsize=100)
         self.timelist = [] #记录最近包的时间戳
         self.current_frame_count = 0
+        # Frames discarded because a newer one superseded them (audio-master
+        # dropping). Surfaced in the fps line so the cost is visible.
+        self.dropped_frames = 0
         if self.kind == 'video':
             self.framecount = 0
             self.lasttime = time.perf_counter()
@@ -72,18 +75,21 @@ class PlayerStreamTrack(MediaStreamTrack):
 
         if self.kind == 'video':
             if hasattr(self, "_timestamp"):
-                #self._timestamp = (time.time()-self._start) * VIDEO_CLOCK_RATE
-                self._timestamp += int(VIDEO_PTIME * VIDEO_CLOCK_RATE)
+                # Audio is the master clock. Video PTS follows REAL elapsed
+                # time, not a fixed 40 ms step per frame: a fixed step makes
+                # the video timeline run slow whenever the render stalls (it
+                # advanced 94% of real time and drifted 0.6 s/10 s behind the
+                # audio track). Deriving it from the clock means a late frame
+                # simply carries a later PTS and the streams stay aligned.
+                # Monotonic, not wall: an NTP step backward would produce
+                # non-monotonic RTP timestamps.
+                elapsed = time.monotonic() - self._start
+                self._timestamp = int(elapsed * VIDEO_CLOCK_RATE)
                 self.current_frame_count += 1
-                wait = self._start + self.current_frame_count * VIDEO_PTIME - time.time()
-                # wait = self.timelist[0] + len(self.timelist)*VIDEO_PTIME - time.time()               
-                if wait>0:
-                    await asyncio.sleep(wait)
-                # if len(self.timelist)>=100:
-                #     self.timelist.pop(0)
-                # self.timelist.append(time.time())
+                # No wall-clock wait: with audio as master, sleeping here only
+                # starves recv() and lets stale frames pile up in the queue.
             else:
-                self._start = time.time()
+                self._start = time.monotonic()
                 self._timestamp = 0
                 self.timelist.append(self._start)
                 mylogger.info('video start:%f',self._start)
@@ -132,7 +138,25 @@ class PlayerStreamTrack(MediaStreamTrack):
                 break
             except queue.Empty:
                 await asyncio.sleep(0.005)
-                
+
+        if self.kind == 'video':
+            # Audio is the master clock: a video frame that waited in the
+            # queue is already late, so send the NEWEST one and discard the
+            # stale ones instead of replaying them. Without this the queue
+            # becomes a delay line -- every rendered frame is eventually sent,
+            # so the picture falls further behind the speech the longer it
+            # talks, and the backlog never drains.
+            dropped = 0
+            while True:
+                try:
+                    nxt_frame, nxt_event = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                frame, eventpoint = nxt_frame, nxt_event
+                dropped += 1
+            if dropped:
+                self.dropped_frames += dropped
+
         pts, time_base = await self.next_timestamp()
         frame.pts = pts
         frame.time_base = time_base
@@ -146,7 +170,8 @@ class PlayerStreamTrack(MediaStreamTrack):
             self.framecount += 1
             self.lasttime = time.perf_counter()
             if self.framecount==100:
-                mylogger.info(f"------actual avg final fps:{self.framecount/self.totaltime:.4f}")
+                mylogger.info(f"------actual avg final fps:{self.framecount/self.totaltime:.4f}"
+                              f" (dropped {self.dropped_frames})")
                 self.framecount = 0
                 self.totaltime=0
         return frame
