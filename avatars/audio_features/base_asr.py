@@ -50,7 +50,16 @@ class BaseASR:
         self.stride_left_size = opt.l
         self.stride_right_size = opt.r
         #self.context_size = 10
-        self.feat_queue = Queue(maxsize=2)
+        # Bounded but BURST-TOLERANT. The TTS pushes a whole sentence in one
+        # tight loop; the ASR turns it into feature batches within ~100 ms
+        # while inference consumes one per window (~670 ms). At maxsize=2 the
+        # overflow policy dropped the OLDEST batch — the mouth rendered the
+        # first frames of a sentence and then teleported to its end, while
+        # the audio track played every word (measured: 54 of 59 batches
+        # dropped in one 24 s burst). 30 batches (~12 s of speech) absorbs
+        # any realistic sentence without temporal aliasing; drop-oldest stays
+        # as the safety valve for unbroken monologues.
+        self.feat_queue = Queue(maxsize=30)
 
         #self.warm_up()
 

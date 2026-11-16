@@ -166,20 +166,26 @@ def test_run_step_emits_one_batch_and_paces_audio():
 def test_undrained_consumer_never_blocks_the_asr_thread():
     """A stalled inference loop must not wedge the ASR worker.
 
-    feat_queue is bounded, so a plain put() deadlocks as soon as inference
-    falls behind — which starvation makes routine. _emit must instead drop the
-    superseded batch and count it. output_queue is drained here because it is
-    the audio clock's queue and blocking on it is the *documented* behaviour
-    (it applies backpressure to a producer that outruns the audio track).
+    feat_queue is bounded (30 batches, ~12 s of speech) so a plain put()
+    deadlocks once inference falls far enough behind — _emit must instead
+    drop the superseded batch and count it. The bound is deliberately larger
+    than a sentence: with maxsize=2 the TTS burst dropped the OLDEST batches
+    (54/59 in a 24 s clip) and the mouth skipped whole words while the audio
+    played them all. This test drives it PAST the sentence-sized bound to
+    verify the drop-oldest valve still guards an unbroken monologue.
+    output_queue is drained here because it is the audio clock's queue and
+    blocking on it is the *documented* behaviour (it applies backpressure to
+    a producer that outruns the audio track).
     """
     asr, _probe = build(batch_size=4)
-    asr.push_pcm(np.zeros(WINDOW_SAMPLES * 20, dtype=np.float32))
-    for _ in range(40):
+    # 60 windows of PCM — more than the 30-batch queue can hold undisgorged.
+    asr.push_pcm(np.zeros(WINDOW_SAMPLES * 60, dtype=np.float32))
+    for _ in range(60):
         asr.run_step()          # must return, not block
         while not asr.output_queue.empty():     # act as the audio consumer
             asr.output_queue.get_nowait()
-    assert asr.dropped_batches > 0
-    assert asr.feat_queue.qsize() <= 2
+    assert asr.dropped_batches > 0, "drop-oldest valve never fired"
+    assert asr.feat_queue.qsize() <= 30
 
 
 def test_starvation_pads_to_batch_size_and_is_counted():

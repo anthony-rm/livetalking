@@ -404,8 +404,12 @@ class BaseAvatar:
             return pred, elapsed
 
         logger.info('start inference')
+        _trace = os.environ.get("LT_RENDER_TRACE") == "1"
+        _t_iter = _t_feat = _t_outq = _t_submit = 0.0
+        _n_iter = 0
         while not quit_event.is_set():
             try:
+                _t0 = time.perf_counter()
                 audiofeat_batch = []
                 try:
                     audiofeat_batch = self.asr.feat_queue.get(block=True, timeout=1)
@@ -416,7 +420,8 @@ class BaseAvatar:
                     while len(pending) > keep_in_flight:
                         emit(pending.popleft())
                     continue
-
+                _t_feat += time.perf_counter() - _t0
+                _t0 = time.perf_counter()
                 is_all_silence = True
                 audio_frames: list[AudioFrameData] = []
                 for _ in range(self.batch_size * 2):
@@ -433,8 +438,10 @@ class BaseAvatar:
                             data=np.zeros(self.asr.chunk, dtype=np.float32),
                             type=1, userdata={})
                     if audioframe.type == 0:
-                        is_all_silence = False               
+                        is_all_silence = False
                     audio_frames.append(audioframe)
+                _t_outq += time.perf_counter() - _t0
+                _t0 = time.perf_counter()
 
                  # 检测状态变化
                 current_speaking = not is_all_silence
@@ -457,10 +464,13 @@ class BaseAvatar:
                         token = None
                     pending.append((index, audio_frames, token, False))
                     index = index + self.batch_size
+                _t_submit += time.perf_counter() - _t0
+                _n_iter += 1
 
                 # Emit in order, holding at most `keep_in_flight` batches back.
                 # THIS is where pipelining happens: the next RPC was already
                 # submitted above, so its transfer overlaps this batch's compute.
+                _t0 = time.perf_counter()
                 while len(pending) > keep_in_flight:
                     _, elapsed = emit(pending.popleft())
                     if elapsed > 0:
@@ -470,6 +480,13 @@ class BaseAvatar:
                             logger.info(f"------actual avg infer fps:{count/counttime:.4f}")
                             count = 0
                             counttime = 0
+                _t_emit = time.perf_counter() - _t0
+                if _trace and _n_iter % 50 == 0:
+                    logger.info("[render] iters=%d feat=%.1fms outq=%.1fms "
+                                "submit=%.1fms emit=%.1fms (per 50 iters)",
+                                _n_iter, _t_feat * 1000, _t_outq * 1000,
+                                _t_submit * 1000, _t_emit * 1000)
+                    _t_feat = _t_outq = _t_submit = _t_emit = 0.0
 
                 if current_speaking != last_speaking:
                     logger.info(f"inference 状态切换：{'说话' if last_speaking else '静音'} → {'说话' if current_speaking else '静音'}")

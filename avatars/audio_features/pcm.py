@@ -209,13 +209,24 @@ class PcmASR(BaseASR):
         """Drop queued audio AND un-extracted PCM.
 
         Barge-in means the audio the user is about to hear is different, so
-        features derived from the old PCM are not merely stale — they belong to
-        a sentence that will never be spoken. Keeping them would lip-sync to
-        silence.
+        features derived from the old PCM are not merely stale — they belong
+        to a sentence that will never be spoken. Keeping them would lip-sync
+        to silence.
+
+        feat_queue must be purged too: it can hold up to 30 batches (~12 s)
+        of the interrupted sentence, and the inference thread would happily
+        animate its zombie speech before reaching the new audio.
         """
         super().flush_talk()
         self._pcm = np.zeros((0,), dtype=np.float32)
         self._feat = np.zeros((0, self.FEAT_DIM), dtype=np.float32)
+        try:
+            while True:
+                self.feat_queue.get_nowait()
+        except queue.Empty:
+            pass
+        self.dropped_batches = 0
+        self.starved_batches = 0
 
 
 def make_ditto_feat_fn(
