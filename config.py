@@ -111,6 +111,11 @@ def parse_args():
     parser.add_argument('--max_session', type=int, default=5)
     parser.add_argument('--listenport', type=int, default=8010,
                         help="web listen port")
+    parser.add_argument('--bind', type=str, default='127.0.0.1',
+                        help="listen address. Keep 127.0.0.1 on shared hosts: "
+                             "clients reach the app through an SSH tunnel "
+                             "(ssh -L 8010:127.0.0.1:8010), so the port must "
+                             "never be exposed to the network.")
 
     # ─── 虚拟摄像头 ───────────────────────────────────────────────────
     parser.add_argument('--audio_output_device', type=int, default=None,

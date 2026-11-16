@@ -544,11 +544,14 @@ def main():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(runner.setup())
-        site = web.TCPSite(runner, '0.0.0.0', opt.listenport)
+        # Loopback by default (config.py --bind): the app is reached through
+        # an SSH tunnel, never from the network at large.
+        site = web.TCPSite(runner, opt.bind, opt.listenport)
         try:
             loop.run_until_complete(site.start())
         except OSError as e:
-            logger.error('[startup] cannot bind 0.0.0.0:%s — %s', opt.listenport, e)
+            logger.error('[startup] cannot bind %s:%s — %s',
+                         opt.bind, opt.listenport, e)
             logger.error('[startup] another process is holding the port; '
                          'use ./restart.sh to stop it and relaunch')
             loop.run_until_complete(runner.cleanup())
