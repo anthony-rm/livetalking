@@ -235,6 +235,48 @@ STATUS 2026-11-14 late: **decoder + warp BOTH on TRT 10, end-to-end measured.**
 - Box reboots by the teacher on crash ("崩了后短信给我重启吧") — expect uptime
   resets; /tmp loss; always `free -m` + `nvidia-smi` first.
 
+# PLAN_DITTO_SESSION_5b — resume point (2026-11-16, paste-back/queue session)
+
+## Landed (commit f50a902, pushed)
+
+- **Async pinned handoff** in ditto_avatar: the decode output's .cpu() was a
+  SYNCHRONOUS ~273 ms/window stall (GPU idle, inference thread blocked).
+  Now: uint8 conversion on GPU -> async copy into pinned memory behind a CUDA
+  event -> _STAGED_FRAME sentinels through the batch contract ->
+  paste_back_frame resolves them FIFO, waiting only at pixel-read time.
+- **Live gate: frame drops collapsed from 135-302/100 to 1/100** — delivery
+  is now producer-matched (12.4 fps at sync), the encoder no longer sheds.
+  Wired probe serial: 67.4 ms/frame. Production during speech 9.2 -> ~11-12
+  fps. Server on the box runs this (log /tmp/ditto_server_async.log).
+
+## Stage attribution (fine_probe.py, median-of-3, B=10 window)
+
+    drive_lmdm   ~90 ms | stitch/prep ~96 | warp ~55 | decode ~265
+    convert+cpu  ~273 ms  (THE STALL; conversion itself is only ~20)
+    = ~780 ms/window measured hot
+
+Rejected by measurement this session (do not re-try):
+- Warp threads (10 parallel hybrid chains): 0.95x — the process-wide lock +
+  genuinely GPU-bound; no free lunch there.
+- paste_back ThreadPool(5): 1.10-1.13x — cv2 mostly holds what it needs; a
+  pool buys ~10 ms/window, not worth the complexity yet.
+
+## NEXT LEVER (the last big one in this pipeline)
+
+**paste-back overlap**: 14-19 ms/frame runs serially in process_frames AFTER
+res_frame_queue; meanwhile the GPU sits ~35% idle waiting for the next
+window's features. Move paste_back INTO the inference thread (after staging,
+before queue put) or a small paste thread pool fed by the staged ring; the
+blend is CPU/opencv work that can overlap the next window's warp+decode.
+Expected: production -> ~14 fps (the 69 ms/frame ceiling).
+
+## Probe harnesses (Mac ~/.hermes/cache/scratch/ditto/)
+
+- stage_probe2.py: pipeline sub-stage timings, warp serial-vs-threaded,
+  paste+resize costs.
+- fine_probe.py: per-stage attribution inside inference_batch, f_s astype,
+  conversion cost, paste pool scaling.
+
 # PLAN_DITTO_SESSION_5 — resume point (2026-11-16, batched-engines session)
 
 ## Landed (commit 1555858, pushed)
