@@ -235,6 +235,68 @@ STATUS 2026-11-14 late: **decoder + warp BOTH on TRT 10, end-to-end measured.**
 - Box reboots by the teacher on crash ("崩了后短信给我重启吧") — expect uptime
   resets; /tmp loss; always `free -m` + `nvidia-smi` first.
 
+# PLAN_DITTO_SESSION_5 — resume point (2026-11-16, batched-engines session)
+
+## Landed (commit 1555858, pushed)
+
+- **Wired render: 73.3 -> 69.0 ms/frame** via the static-B=10 batched DECODE
+  engine (`decoder_b10_fp16.engine`, from `~/ditto-weights/warp_b10_engines/`).
+  config.yaml on the box runs `batch_size: 10` (matched to the LMDM window; 8
+  stuttered).
+- **Delivered fps during speech: 7.7 -> 18.7** — the render was no longer the
+  ceiling. The bottleneck moved to the CPU VP8 encoder once audio-master
+  removed the 25 fps pacing cap. `--video-codec h264 --video-scale 720`
+  (box server runs with these now; log /tmp/ditto_server_720.log).
+- Engine build scripts on the Mac:
+  `~/.hermes/cache/scratch/ditto/export_b10.py` (B=10 ONNX export + hybrid
+  split) and `build_b10.py` (standalone builder — building in the same
+  process as the torch exports OOM'd the GPU).
+
+## MEASUREMENTS THAT KILL WRONG NEXT STEPS (do not re-try)
+
+- **B=10 warp engines: SLOWER (32.3 vs 24.5 ms/frame).** Built, verified
+  numerically (mean|diff| 0.0002 vs bs=1 hybrid, batch-independence exact),
+  measured, rejected. The dense-motion hourglass is compute-saturated at
+  B=1 on the 3060; batching only removes launch overhead which wasn't
+  there. Per-frame hybrid warp is the right lane. Engines still on the box
+  (warp_b10_engines/seg*) — keep for a future GPU test, do not wire.
+- **The render is now ~74 ms/frame during speech with paste-back** and
+  production 9.2 fps vs delivered 18.7 — decode batching gained ~5 ms/frame
+  but the per-frame warp (24.5), stitch/cond/queue (~10) and paste-back
+  (14-18) dominate. To go further: batch stitch, overlap paste-back with
+  warp, or cut paste-back cost (fp16/ROI-only blend is already done; the
+  watermark putText at 1080x1920 costs ~2 ms — check before keeping).
+
+## NEXT LEVERS (in value order, all un-measured)
+
+1. **Stitch/cond batching** — stitch runs per frame on CPU (numpy, ~1 ms)
+   but x_d_pending pop(0) is O(n); the queue drains 10/frame. Minor.
+2. **Paste-back overlap**: the paste-back runs in process_frames AFTER the
+   res_frame_queue; moving the bbox blend into inference_batch (GPU-adjacent
+   thread) or threading it would hide its 14-18 ms within the 69 ms render.
+3. **Encode scale tuning**: 720 is 2.25x fewer pixels than 1080; 960 (1.5x)
+   would trade sharpness for a couple fps if the user prefers.
+4. **fp16 paste-back** at 1080p probably unnecessary if #2 lands.
+
+## Traps hit this session
+
+- `torch.onnx.export` in torch 2.9 defaults `dynamo=True` which imports
+  `onnxscript` (not installable on the DNS-less box) — pass `dynamo=False`.
+- The LEGACY exporter refuses 5-D GridSample ("volumetric input"), so the
+  warp re-export NEEDS `torch.onnx.register_custom_op_symbolic` emitting
+  upstream's `GridSample3D` — the shipped ONNX carries that same custom op
+  (that's why it parses with the TRT-8 plugin path upstream).
+- `onnx.utils.Extractor` refuses boundary names missing from value_info;
+  `shape_inference` cannot see through GridSample3D, so the two custom-op
+  outputs' shapes must be added MANUALLY before extract (`make_tensor_value_info`).
+  Same for segC's Sigmoid input (unknown dims) — pin it or TRT rejects the
+  build ("no optimization profile").
+- Build engines WITHOUT torch weights resident (separate process): the
+  builder OOM'd with `resizePhysical` errors while the export script's
+  182-GB-peak models were still in VRAM.
+- `pkill -f "export_b10"` killed the SSH wrapper (exit 255) — always
+  `pgrep` first, then kill the python pid.
+
 # PLAN_DITTO_SESSION_4 — resume point (end of 2026-11-15)
 
 ## Landed and verified this session (pushed to origin/main)
