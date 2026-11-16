@@ -24,6 +24,7 @@ import os
 import pickle
 import sys
 import time
+import collections
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -54,6 +55,11 @@ ONLINE_KWARGS = dict(overlap_v2=70, sampling_timesteps=10, online_mode=True)
 #: HuBERT feature dim (PcmASR.FEAT_DIM). Ditto's own checkpoint; nothing else
 #: may substitute (§4 of the skill reference).
 FEAT_DIM = 1024
+
+
+#: Sentinel returned by inference_batch for frames whose pixels are still in
+#: an async GPU->host copy. paste_back_frame resolves it via _take_staged_frame.
+_STAGED_FRAME = object()
 
 
 def _ensure_ditto_home() -> None:
@@ -321,6 +327,14 @@ class DittoReal(BaseAvatar):
         # bbox + crop-matrix per (frame idx, render size), so paste-back never
         # re-derives the warped-mask bounds; 75 frames -> ~75 tiny tuples.
         self._paste_geom_cache: dict = {}
+        # ── async GPU->host handoff (pinned ring + CUDA events) ──────────────
+        # .cpu() on the decode output stalled the inference thread ~27 ms/frame
+        # while the GPU idled. Instead the uint8 conversion runs ON GPU and the
+        # copy lands in pinned memory asynchronously; consumers wait only when
+        # they actually read the pixels (paste_back_frame). Emission order is
+        # preserved by construction: the deque is FIFO and the markers carry
+        # the frame's slot position implicitly.
+        self._staged: "collections.deque[dict]" = collections.deque()
 
     # ─── audio features ────────────────────────────────────────────────────
     def _make_feat_fn(self):
@@ -412,15 +426,29 @@ class DittoReal(BaseAvatar):
             self._gen_frame_idx += 1
 
         if hasattr(self.dec, "batch"):
+            if device.type != "cuda":
+                # No batched engine without CUDA (tests); synchronous path.
+                imgs = self.dec(np.stack(
+                    [self.warp(f_s[None], x_s, x_d).reshape(256, 64, 64)
+                     for x_s, x_d, f_s in
+                     zip(x_s_batch, x_d_batch, f_s_batch)]))
+                imgs = imgs.permute(0, 2, 3, 1).clamp(0, 1).mul(255) \
+                    .round().to(torch.uint8).cpu().numpy()
+                return [np.ascontiguousarray(img) for img in imgs]
             # Batched decode lane: one engine call per window. The per-frame
             # hybrid warp feeds it (numpy in); decode returns (B,3,512,512)
-            # torch, converted here to per-frame RGB uint8 like DecodeF3D.
+            # torch in sigmoid range. The uint8 conversion happens ON GPU and
+            # the host copy is ASYNC into pinned memory (a synchronous .cpu()
+            # stalled the inference thread ~27 ms/frame with the GPU idle).
+            # Markers flow through the batch contract; paste_back_frame pulls
+            # the pixels from the staged ring in strict emission order.
             f_3d = [self.warp(f_s[None], x_s, x_d).reshape(256, 64, 64)
                     for x_s, x_d, f_s in zip(x_s_batch, x_d_batch, f_s_batch)]
             imgs = self.dec(np.stack(f_3d))
             imgs = imgs.permute(0, 2, 3, 1).clamp(0, 1).mul(255) \
-                .round().to(torch.uint8).cpu().numpy()
-            return [np.ascontiguousarray(img) for img in imgs]
+                .round().to(torch.uint8)
+            self._stage_batch_gpu(imgs)
+            return [_STAGED_FRAME] * self.batch_size
 
         out = []
         for x_s, x_d, f_s in zip(x_s_batch, x_d_batch, f_s_batch):
@@ -429,6 +457,34 @@ class DittoReal(BaseAvatar):
             img = np.clip(img, 0, 255).astype(np.uint8)
             out.append(np.ascontiguousarray(img))
         return out
+
+    # ─── async GPU->host handoff ───────────────────────────────────────────
+    def _stage_batch_gpu(self, imgs_uint8_gpu):
+        """Kick an async copy of this window's frames into pinned host memory.
+
+        The copy is enqueued on the current stream right behind the decode,
+        an event records its completion, and the producer returns without
+        waiting. Memory stays bounded by the pipeline itself:
+        res_frame_queue (batch_size*4 frames) throttles the inference thread
+        long before the staging deque can grow meaningfully.
+        """
+        host = torch.empty(tuple(imgs_uint8_gpu.shape), dtype=torch.uint8,
+                           pin_memory=True)
+        host.copy_(imgs_uint8_gpu, non_blocking=True)
+        ev = torch.cuda.Event()
+        ev.record()
+        self._staged.append({"host": host, "ev": ev, "taken": 0})
+
+    def _take_staged_frame(self) -> np.ndarray:
+        """Pop the next frame in emission order, waiting for the copy only at
+        the moment the pixels are read."""
+        slot = self._staged[0]
+        slot["ev"].synchronize()
+        img = np.ascontiguousarray(slot["host"].numpy()[slot["taken"]])
+        slot["taken"] += 1
+        if slot["taken"] >= slot["host"].shape[0]:
+            self._staged.popleft()
+        return img
 
     # ─── paste-back (upstream's numpy putback math, restructured) ───────────
     # Same formula as upstream PutBackNumpy (mask*render + (1-mask)*frame),
@@ -471,6 +527,8 @@ class DittoReal(BaseAvatar):
         return geom
 
     def paste_back_frame(self, pred_frame, idx: int):
+        if pred_frame is _STAGED_FRAME:
+            pred_frame = self._take_staged_frame()
         frame = self.frame_list_cycle[idx]
         if pred_frame is None:
             return frame.copy()
