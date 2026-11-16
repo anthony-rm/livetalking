@@ -235,6 +235,64 @@ STATUS 2026-11-14 late: **decoder + warp BOTH on TRT 10, end-to-end measured.**
 - Box reboots by the teacher on crash ("崩了后短信给我重启吧") — expect uptime
   resets; /tmp loss; always `free -m` + `nvidia-smi` first.
 
+# PLAN_DITTO_SESSION_5c — resume point (2026-11-16, "paste-back overlap" session)
+
+## OUTCOME: the planned work was WRONG — measurement redirected it
+
+The session opened intending to overlap paste-back with GPU work. The
+LT_RENDER_TRACE (feat/outq/submit/emit timings, now in base_avatar, env
+`LT_RENDER_TRACE=1`) killed that plan in one run:
+
+    [render] feat=10651ms outq=1.7ms submit=8879ms emit=0.0ms (per 50 iters)
+
+The inference thread spends its wait on FEATURES (10.6 s of a 12 s block);
+submit is the batch compute; emit and output_queue are ~0. paste-back runs
+in process_frames — its own thread — and NEVER blocks the render. Overlapping
+it would have changed nothing. **Trace before optimising: the plan file's
+"next lever" was written before these numbers existed.**
+
+## What shipped instead (commit 0eceac7)
+
+1. **feat_queue 2 -> 30 + flush purge** — the real defect the probes found.
+   A burst probe (TTS-pushes-whole-sentence, output_queue undrained) showed
+   maxsize=2's drop-oldest evicting 54/59 batches per sentence: the mouth
+   rendered the start and teleported to the end, skipping middle WORDS while
+   the audio played everything. 30 batches ≈ 12 s absorbs any sentence;
+   drop-oldest remains as the monologue valve (contract test drives it past
+   the bound and asserts the valve fires). flush_talk now purges feat_queue
+   too — after barge-in it could hold 12 s of zombie speech.
+2. **Scope verified before shipping**: the coupling check (consumer drains
+   output_queue at inference rate, exactly like the real server) shows
+   feat depth stays 0 with drops 0 even on a full 11.8 s burst — the
+   output_queue's bounded put COUPLES ASR to the consumer, so the larger
+   queue cannot build a latency backlog. It only removes the drop path.
+3. Live gate: **12.6 fps delivered, 2-5 drops/100** (was 135-302 drops/100
+   before the async handoff). Production-matched, sync held.
+
+## The performance map as it now stands (all measured)
+
+    render ceiling:  69 ms/frame -> 14.5 fps (warp 24.5 + decode 25.9 +
+                     LMDM ~9 + stitch/cond/queue ~10)
+    live delivered:  12.6 fps steady speech (encoder 720p H264 keeps up)
+    drops:          2-5/100 (encoder sheds almost nothing now)
+    A/V drift:      ~-0.15 s CONSTANT offset (paste-back+encode); not growing
+
+Next real levers, ONLY with a trace run first:
+- Whether features arrive late because the TTS is slow (edge-tts 1.6-2.1 s
+  synthesis) — that wait is inherent to Send->speech, not render fps.
+- The remaining -0.15 s constant offset: paste-back (~14-19 ms) + encode
+  buffer; shaving it means moving the paste-back into the same thread as
+  the take_staged (still NOT an overlap win, just less serial depth).
+- 25 fps delivery: encode at 1080p now holds ~18.7 fps idle / burst paths;
+  if the user wants full 1080p sharpness, tune --video-scale 960.
+
+## Harnesses added (Mac ~/.hermes/cache/scratch/ditto/)
+
+- burst_probe.py: TTS-burst behaviour; REQUIRES draining output_queue to
+  mirror the real server (undrained, it reports enormous drop counts that
+  the live path never produces — the coupling check proved this).
+- coupling_check.py: feat depth + drop counts with inference-rate draining.
+
 # PLAN_DITTO_SESSION_5b — resume point (2026-11-16, paste-back/queue session)
 
 ## Landed (commit f50a902, pushed)
