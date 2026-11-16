@@ -1,4 +1,63 @@
-# PLAN_DITTO_SESSION_7 — resume point (2026-11-16, stopped mid-sweep)
+# PLAN_DITTO_SESSION_8 — resume point (2026-11-16, session-7 tasks DONE)
+
+## OUTCOME (all measured this session)
+
+Tasks 1-5 of session 7 are COMPLETE:
+
+- **Scale sweep done (task 1-2)**: 720 21.8-22.5 fps / 960 23.2-24.1 fps
+  (drops 4-7, ~=0.5%) / 1080 20.8-22.8 fps (drops 57-83, 6-9%: visible
+  stutter). **960 is the serving config** (even-dimension fix in
+  cb9cff7). 1080 not viable on CPU libx264.
+- **Encoder theory dead (negative result)**: x264 ultrafast encodes
+  960x1706 at 5.6 ms/frame (178 fps); the ~2 fps delivery shortfall vs the
+  25 fps content rate is newest-frame dropping in recv(), by design.
+- **A/V offset mechanism found (task 4)**: three probes killed the
+  rate/encoder/start-offset theories (av_offset_series: TRANSIENT;
+  av_sawtooth: no accumulation over 56 s; feat_lat: ASR realtime, window
+  maps 5 rows to the FIRST 0.2 s of a 0.405 s window -> a row for content
+  t needs PCM through t+0.205). The inference thread pairs each feat batch
+  with same-iteration audio chunks sitting 10 chunks of content AHEAD of
+  the batch's rows; both RTP timelines run at wall rate, so the pairing
+  error is preserved at the client forever.
+- **Lip-sync fix shipped (task 5, d7c1ebf)**: ASR declares
+  `audio_lead_chunks` (PcmASR = 10 = its right-context), the audio pacer
+  holds exactly that many chunks in a FIFO delay line. Server env
+  `LT_AUDIO_LEAD` overrides the amount (measurement).
+  Live A/B (6 xcorr probe runs per arm, lip lag weighted-mean):
+    lead=0 : +0.589 s    lead=10: +0.426 s    lead=20: +0.211 s
+  -> the offset is LINEAR in lead (-0.19 s per 10 chunks, theory -0.2).
+- **Fix shipped on the box**: lead=10 default (pcm.py), server running
+  960p, gate 22-23.5 fps drops ~1%.
+- Tests: 139 passed (2 known-flaky pacing counts deselected per AGENTS.md).
+
+## What the xcorr instrument still cannot do
+
+The per-run xcorr spread is +-0.2 s at corr 0.15-0.25 (mouth-region frame
+diff vs audio RMS, 40 ms bins). It proved LINEARITY (the sign and slope of
+the response to lead), but a single run cannot certify |offset| < 80 ms.
+If tighter certification is wanted: record 60 s of speech, extract the
+mouth ROI mean-diff signal at native 25 fps, and cross-correlate at finer
+bins (20 ms) with the audio envelope — or just accept the linear response
+as proof and tune lead by eye in the browser.
+
+## Open (unchanged)
+
+- 1080p would need a hardware encoder (NVENC) — aiortc uses libx264; out of
+  scope unless the box exposes nvenc via PyAV build (it does not today).
+- The one-off residual ~+0.2 s at lead=10 suggests lead=15 could center
+  it — TODO if the user still sees lips behind voice in the browser.
+- Sibling agents' work (emotion conditioning 0e6ae9f) is live on the box;
+  its `test_emotion_tag_does_not_leak_past_sentence_end` was failing at
+  session-6 stop time (not caused by feat_queue/lead changes — verified it
+  fails identically at maxsize 2 and 30).
+
+## Resume protocol
+
+`git status` first (siblings active). Server: `~/livetalking_box` with
+`--video-scale 960`, default lead. Probes in /tmp: av_final_measure.py
+(xcorr xN), av_xcorr.py, av_onset_align.py (deprecated: blink-fragile),
+phase1_gate.py, av_timing_probe.py. Scratch mirror under
+~/.hermes/cache/scratch/ditto/. Traps: same as session 7 list below.
 
 ## State at stop (all measured, nothing below is a guess)
 
