@@ -44,7 +44,7 @@ notices are retained in [LICENSE](./LICENSE) and in the source file headers.
 | Online education / training | Recorded course material, or an API-driven instructor for live lectures |
 | Voice assistant | Drive the `/human` endpoint from a speaker or app frontend |
 | Exhibition / kiosk presenter | A digital presenter for venue narration |
-| Batch short-video creation | Submit scripts through `/human` + `/record` instead of filming |
+| Batch short-video creation | Submit scripts through `/human` instead of filming |
 
 **Core flow**: input (text or audio) → LLM response (optional) → TTS synthesis →
 real-time lip-sync inference → audio/video stream out.
@@ -116,7 +116,7 @@ server runs without a model loaded until something connects.
 
 | Page | URL | Description |
 |------|-----|-------------|
-| Home | `/index.html` | WebRTC connect, text/audio driver, recording |
+| Home | `/index.html` | WebRTC connect, text/audio driver |
 | Avatar Studio | `/avatar.html` | Enhance a base video and/or generate an avatar from it |
 | Admin Console | `/admin.html` | Session monitoring, global config, model controls |
 
@@ -162,7 +162,7 @@ editing the pipeline.
 
 | Document | Description |
 |----------|-------------|
-| [docs/api.md](docs/api.md) | WebRTC, text/audio driver, recording, action choreography |
+| [docs/api.md](docs/api.md) | WebRTC, text/audio driver, action choreography |
 | [docs/avatar_api.md](docs/avatar_api.md) | Avatar generation: create task, query progress, delete |
 | [docs/admin_api.md](docs/admin_api.md) | Global config, session monitoring, force stop |
 | [docs/avatar-studio.md](docs/avatar-studio.md) | The merged Avatar Studio page and its enhance → avatar chain |

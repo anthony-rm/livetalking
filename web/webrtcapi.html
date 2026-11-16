@@ -13,7 +13,7 @@
 <nav class="navbar navbar-dark navbar-themed">
     <div class="container-fluid px-4">
         <a class="navbar-brand" href="/index.html"><i class="bi bi-camera-video-fill me-2"></i>LiveTalking</a>
-        <span class="text-white-50 small d-none d-md-inline">WebRTC playback, echo driver and recording</span>
+        <span class="text-white-50 small d-none d-md-inline">WebRTC playback and echo driver</span>
     </div>
 </nav>
 
@@ -36,16 +36,6 @@
                     <audio id="audio" autoplay="true"></audio>
                     <video id="video" class="w-100" autoplay="true" playsinline="true"></video>
                     <input type="hidden" id="sessionid" value="0">
-                </div>
-            </div>
-
-            <div class="glass-card">
-                <div class="card-header"><i class="bi bi-record-circle"></i> Recording (POST /record)</div>
-                <div class="card-body">
-                    <div class="d-flex gap-2">
-                        <button class="btn-primary-custom btn-sm" id="btn_start_record"><i class="bi bi-record-circle"></i> Start Recording</button>
-                        <button class="btn-outline-custom btn-sm" id="btn_stop_record" disabled><i class="bi bi-stop-circle"></i> Stop Recording</button>
-                    </div>
                 </div>
             </div>
         </div>
@@ -89,55 +79,6 @@
       });
       $('#message').val('');
 	  });
-
-    $('#btn_start_record').click(function() {
-        console.log('Starting recording...');
-        fetch('/record', {
-            body: JSON.stringify({
-                    type: 'start_record',
-                    sessionid: String(document.getElementById('sessionid').value),
-                }),
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-            method: 'POST'
-        }).then(function(response) {
-            if (response.ok) {
-                console.log('Recording started.');
-                $('#btn_start_record').prop('disabled', true);
-                $('#btn_stop_record').prop('disabled', false);
-            } else {
-                console.error('Failed to start recording.');
-            }
-        }).catch(function(error) {
-            console.error('Error:', error);
-        });
-    });
-
-    $('#btn_stop_record').click(function() {
-        console.log('Stopping recording...');
-        fetch('/record', {
-            body: JSON.stringify({
-                    type: 'end_record',
-                    sessionid: String(document.getElementById('sessionid').value),
-                }),
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-            method: 'POST'
-        }).then(function(response) {
-            if (response.ok) {
-                console.log('Recording stopped.');
-                $('#btn_start_record').prop('disabled', false);
-                $('#btn_stop_record').prop('disabled', true);
-            } else {
-                console.error('Failed to stop recording.');
-            }
-        }).catch(function(error) {
-            console.error('Error:', error);
-        });
-    });
-
 	});
 </script>
 </body>

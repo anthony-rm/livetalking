@@ -396,9 +396,6 @@ def _build_avatar_session_locked(sessionid:str, params:dict)->BaseAvatar:
     if ref_audio: #请求参数配置了参考音频
         opt_this.REF_FILE = ref_audio
         opt_this.REF_TEXT = ref_text
-    custom_config=params.get('custom_config','') #动作编排配置
-    if custom_config:
-        opt_this.customopt = json.loads(custom_config)
 
     avatar_session = registry.create("avatar", plugin, opt=opt_this, model=model, avatar=avatar_this)
     return avatar_session
@@ -411,18 +408,6 @@ async def whep(request):
 
 async def on_shutdown(app):
     await rtc_manager.shutdown()
-
-async def download_record(request):
-    sessionid = request.match_info.get('sessionid')
-    if not sessionid:
-        return web.Response(status=400, text="sessionid is required")
-    
-    record_file = os.path.join('data', 'record', f"{sessionid}.mp4")
-    
-    if os.path.exists(record_file):
-        return web.FileResponse(record_file)
-    else:
-        return web.Response(status=404, text="Record not found")
 
 
 def main():
@@ -516,7 +501,6 @@ def main():
 
     appasync.on_shutdown.append(on_shutdown)
     appasync.router.add_post("/offer", offer)
-    appasync.router.add_get("/record/{sessionid}", download_record)
 
     # 注册 server/routes.py 中的通用 API 路由
     setup_routes(appasync)

@@ -104,7 +104,7 @@
                 <div class="card-body">
                     <div class="mb-2">
                         <label class="form-label">Text <span class="param-hint">(type: echo/chat)</span></label>
-                        <textarea class="form-control form-control-sm" id="txtMessage" rows="2" placeholder="Enter text to speak...">Hello, welcome to LiveTalking</textarea>
+                        <textarea class="form-control form-control-sm" id="txtMessage" rows="3" placeholder="Enter text to speak...">Hello, and welcome to LiveTalking. This is a longer sentence that exercises the text-to-speech pipeline end to end, so you can check mouth-sync pacing and confirm that every word arrives in the right order during sustained speech.</textarea>
                     </div>
                     <div class="d-flex gap-2 align-items-end">
                         <select class="form-select form-select-sm" style="width:120px;" id="txtType">
@@ -127,33 +127,6 @@
                 <div class="card-body">
                     <input type="file" class="form-control form-control-sm mb-2" id="audioFile" accept="audio/*">
                     <button class="btn-primary-custom btn-sm" onclick="uploadAudio()"><i class="bi bi-upload"></i> Upload &amp; Play</button>
-                </div>
-            </div>
-
-            <!-- 4. Recording -->
-            <div class="glass-card">
-                <div class="card-header"><i class="bi bi-record-circle"></i> Recording (POST /record)</div>
-                <div class="card-body">
-                    <div class="d-flex gap-2">
-                        <button class="btn-outline-custom btn-sm" id="btnRecToggle" onclick="toggleRecord()"><i class="bi bi-record-circle"></i> Start Recording</button>
-                        <button class="btn-outline-custom btn-sm" id="btnDownload" onclick="downloadRecord()" disabled><i class="bi bi-download"></i> Download Video</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 5. Custom State -->
-            <div class="glass-card">
-                <div class="card-header"><i class="bi bi-sliders"></i> Custom State (POST /set_audiotype)</div>
-                <div class="card-body">
-                    <div class="row g-2 align-items-end">
-                        <div class="col-6">
-                            <label class="form-label">Audiotype Index</label>
-                            <input type="number" class="form-control form-control-sm" id="audiotypeVal" value="2" min="2">
-                        </div>
-                        <div class="col-6">
-                            <button class="btn-primary-custom btn-sm w-100" onclick="setAudiotype()"><i class="bi bi-arrow-right-circle"></i> Switch State</button>
-                        </div>
-                    </div>
                 </div>
             </div>
 
@@ -325,46 +298,6 @@ function checkSpeaking() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionid: String(sessionid) }),
     }).then(r => r.json()).then(d => alert('Speaking: ' + JSON.stringify(d.data)));
-}
-
-// ─── Recording ─────────────────────────────────────────────
-let recording = false;
-function toggleRecord() {
-    if (!sessionid) return alert('Please connect WebRTC first');
-    const btn = document.getElementById('btnRecToggle');
-    const type = recording ? 'end_record' : 'start_record';
-    fetch('/record', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type, sessionid: String(sessionid) }),
-    }).then(r => r.json()).then(d => {
-        console.log(type + ':', d);
-        recording = !recording;
-        if (recording) {
-            btn.className = 'btn-danger-custom btn-sm';
-            btn.innerHTML = '<i class="bi bi-stop-circle"></i> Stop Recording';
-            document.getElementById('btnDownload').disabled = true;
-        } else {
-            btn.className = 'btn-outline-custom btn-sm';
-            btn.innerHTML = '<i class="bi bi-record-circle"></i> Start Recording';
-            document.getElementById('btnDownload').disabled = false;
-        }
-    });
-}
-function downloadRecord() {
-    if (!sessionid) return;
-    window.open('/record/' + sessionid, '_blank');
-}
-
-// ─── Audiotype ─────────────────────────────────────────────
-function setAudiotype() {
-    if (!sessionid) return alert('Please connect WebRTC first');
-    const val = parseInt(document.getElementById('audiotypeVal').value) || 0;
-    fetch('/set_audiotype', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audiotype: val, sessionid: String(sessionid) }),
-    }).then(r => r.json()).then(d => console.log('set_audiotype:', d));
 }
 
 </script>

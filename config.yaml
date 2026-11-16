@@ -19,9 +19,6 @@ avatar_id: anthony007
 # benchmark_batchsize.py (M2 Air, fp16): bs8=22.5fps  bs16=17.7fps  bs32=14.0fps
 batch_size: 8
 
-# -------- Custom Actions ----------------------------------------------------------
-customvideo_config: ''
-
 # -------- TTS ----------------------------------------------------------
 tts: edgetts                   # edgetts / gpt-sovits / cosyvoice / fishtts / tencent / doubao / indextts2 / azuretts / qwentts
 REF_FILE: ''                   # voice name or reference audio file path (wav, 16kHz, mono)

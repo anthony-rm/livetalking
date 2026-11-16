@@ -319,14 +319,6 @@
                         ? `<span class="badge-status badge-speaking"><i class="bi bi-mic-fill"></i> Speaking</span>`
                         : `<span class="badge-status badge-silent"><i class="bi bi-mic-mute-fill"></i> Silent</span>`);
 
-                const recBadge = (!building && session.recording)
-                    ? `<span class="badge-status badge-recording ms-2"><i class="bi bi-record-circle"></i> Recording</span>`
-                    : '';
-
-                const customOptContent = session.customopt && session.customopt.length > 0
-                    ? `<pre class="mt-1 p-2 bg-light border rounded text-dark" style="font-size: 0.75rem; max-height: 120px; overflow-y: auto;">${escapeHtml(JSON.stringify(session.customopt, null, 2))}</pre>`
-                    : '<span class="text-muted">None</span>';
-
                 const details = building
                     ? `<div class="text-muted" style="font-size: 0.9rem;">
                            Waiting for the model to load — this session has no stream yet.
@@ -346,10 +338,6 @@
                             <div class="session-detail-item">
                                 <strong>Voice Ref:</strong> ${escapeHtml(session.REF_FILE)}
                             </div>
-                            <div class="session-detail-item mt-2">
-                                <strong><i class="bi bi-sliders"></i> Custom Actions:</strong>
-                                ${customOptContent}
-                            </div>
                         </div>
                        </div>`;
 
@@ -362,7 +350,6 @@
                             </div>
                             <div class="d-flex align-items-center gap-2">
                                 ${statusBadge}
-                                ${recBadge}
                                 <button class="btn btn-sm btn-outline-danger btn-kill-session"
                                         data-sessionid="${escapeHtml(session.sessionid)}"
                                         title="Disconnect this session">

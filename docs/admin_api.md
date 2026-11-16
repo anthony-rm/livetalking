@@ -32,7 +32,6 @@ GET /api/admin/config
       "batch_size": 16,
       "modelres": 192,
       "modelfile": "",
-      "customvideo_config": "",
       "tts": "edgetts",
       "REF_FILE": "zh-CN-YunxiaNeural",
       "REF_TEXT": null,
@@ -40,8 +39,7 @@ GET /api/admin/config
       "transport": "webrtc",
       "push_url": "http://localhost:1985/rtc/v1/whip/?app=live&stream=livestream",
       "max_session": 1,
-      "listenport": 8010,
-      "customopt": []
+      "listenport": 8010
     }
   }
 }
@@ -61,7 +59,6 @@ GET /api/admin/config
 | `batch_size` | int | 16 | 推理批大小 |
 | `modelres` | int | 192 | 模型分辨率 |
 | `modelfile` | string | "" | 自定义模型文件路径 |
-| `customvideo_config` | string | "" | 自定义动作 JSON 文件路径 |
 | `tts` | string | "edgetts" | TTS 插件 |
 | `REF_FILE` | string | "zh-CN-YunxiaNeural" | TTS 参考文件或语音模型ID |
 | `REF_TEXT` | string | null | TTS 参考文本 |
@@ -70,7 +67,6 @@ GET /api/admin/config
 | `push_url` | string | — | RTCPush 目标地址 |
 | `max_session` | int | 1 | 最大会话数 |
 | `listenport` | int | 8010 | HTTP 监听端口 |
-| `customopt` | array | [] | 自定义动作配置（已解析） |
 
 ---
 
@@ -95,13 +91,11 @@ GET /api/admin/sessions
       {
         "sessionid": "uuid-string",
         "speaking": true,
-        "recording": false,
         "model": "musetalk",
         "avatar_id": "avatar1",
         "REF_FILE": "zh-CN-YunxiaNeural",
         "transport": "webrtc",
-        "batch_size": 16,
-        "customopt": []
+        "batch_size": 16
       }
     ]
   }
@@ -114,13 +108,11 @@ GET /api/admin/sessions
 |------|------|------|
 | `sessionid` | string | 会话唯一标识 |
 | `speaking` | bool | 当前是否正在说话 |
-| `recording` | bool | 当前是否正在录制 |
 | `model` | string | 会话使用的 Avatar 模型 |
 | `avatar_id` | string | 会话使用的 Avatar 标识 |
 | `REF_FILE` | string | TTS 参考文件/模型ID |
 | `transport` | string | 传输方式 |
 | `batch_size` | int | 推理批大小 |
-| `customopt` | array | 自定义动作配置 |
 
 ---
 

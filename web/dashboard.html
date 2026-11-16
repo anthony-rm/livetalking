@@ -42,25 +42,6 @@
         .user-message { background-color: #eef3ff; border-left: 4px solid var(--primary); }
         .system-message { background-color: #eafaf3; border-left: 4px solid var(--success); }
 
-        .recording-indicator {
-            position: absolute;
-            top: 15px;
-            right: 15px;
-            background-color: rgba(239, 68, 68, 0.85);
-            color: white;
-            padding: 5px 10px;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            display: none;
-        }
-        .recording-indicator.active { display: flex; align-items: center; }
-        .recording-indicator .blink {
-            width: 10px; height: 10px; background-color: #fff;
-            border-radius: 50%; margin-right: 5px; animation: blink 1s infinite;
-        }
-
-        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
-
         .settings-panel {
             padding: 15px;
             background-color: rgba(241,245,249,0.7);
@@ -120,10 +101,6 @@
                     <div class="card-body">
                         <div class="video-container">
                             <video id="video" autoplay playsinline></video>
-                            <div class="recording-indicator" id="recording-indicator">
-                                <div class="blink"></div>
-                                <span>Recording</span>
-                            </div>
                         </div>
 
                         <div class="mt-3">
@@ -135,16 +112,6 @@
                                     <button class="btn-danger-custom w-100" id="stop" style="display: none;">
                                         <i class="bi bi-stop-fill"></i> Disconnect
                                     </button>
-                                </div>
-                                <div class="col-md-6">
-                                    <div class="d-flex gap-2">
-                                        <button class="btn-outline-custom flex-grow-1" id="btn_start_record">
-                                            <i class="bi bi-record-circle"></i> Start Recording
-                                        </button>
-                                        <button class="btn-outline-custom flex-grow-1" id="btn_stop_record" disabled>
-                                            <i class="bi bi-stop-circle"></i> Stop Recording
-                                        </button>
-                                    </div>
                                 </div>
                             </div>
 
@@ -303,57 +270,6 @@
                 $(this).hide();
                 $('#start').show();
                 updateConnectionStatus('disconnected');
-            });
-
-            // Recording
-            $('#btn_start_record').click(function() {
-                console.log('Starting recording...');
-                fetch('/record', {
-                    body: JSON.stringify({
-                        type: 'start_record',
-                        sessionid: String(document.getElementById('sessionid').value),
-                    }),
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    method: 'POST'
-                }).then(function(response) {
-                    if (response.ok) {
-                        console.log('Recording started.');
-                        $('#btn_start_record').prop('disabled', true);
-                        $('#btn_stop_record').prop('disabled', false);
-                        $('#recording-indicator').addClass('active');
-                    } else {
-                        console.error('Failed to start recording.');
-                    }
-                }).catch(function(error) {
-                    console.error('Error:', error);
-                });
-            });
-
-            $('#btn_stop_record').click(function() {
-                console.log('Stopping recording...');
-                fetch('/record', {
-                    body: JSON.stringify({
-                        type: 'end_record',
-                        sessionid: String(document.getElementById('sessionid').value),
-                    }),
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    method: 'POST'
-                }).then(function(response) {
-                    if (response.ok) {
-                        console.log('Recording stopped.');
-                        $('#btn_start_record').prop('disabled', false);
-                        $('#btn_stop_record').prop('disabled', true);
-                        $('#recording-indicator').removeClass('active');
-                    } else {
-                        console.error('Failed to stop recording.');
-                    }
-                }).catch(function(error) {
-                    console.error('Error:', error);
-                });
             });
 
             $('#echo-form').on('submit', function(e) {

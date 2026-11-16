@@ -23,7 +23,7 @@ FAKE = {
     "code": 0, "msg": "ok",
     "data": {"sessions": [
         {"sessionid": "building-abc-123", "speaking": False,
-         "recording": False, "building": True},
+         "building": True},
     ]},
 }
 

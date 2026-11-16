@@ -97,6 +97,32 @@ async def interrupt_talk(request):
         return json_error(str(e))
 
 
+async def set_emotion(request):
+    """Set the avatar's emotion (ditto backend).
+
+    Accepts an emotion name ("happy", "surprise", ...), an index 0..7, a list
+    of indices (soft mix), or null to clear back to the default. For the
+    ditto backend this drives the motion model's 8-class conditioning.
+    Other backends answer `unsupported`.
+    """
+    try:
+        params = await request.json()
+        sessionid = params.get('sessionid', '')
+        avatar_session = get_session(request, sessionid)
+        if avatar_session is None:
+            return json_error("session not found")
+        if not hasattr(avatar_session, 'set_emotion'):
+            return json_error("emotion is only supported by the ditto backend")
+        try:
+            avatar_session.set_emotion(params.get('emotion'))
+        except ValueError as e:
+            return json_error(str(e))
+        return json_ok(data={"emotion": avatar_session.current_emotion()})
+    except Exception as e:
+        logger.exception('set_emotion exception:')
+        return json_error(str(e))
+
+
 async def humanaudio(request):
     """上传音频文件"""
     try:
@@ -125,65 +151,6 @@ async def humanaudio(request):
         return json_ok()
     except Exception as e:
         logger.exception('humanaudio exception:')
-        return json_error(str(e))
-
-
-async def set_audiotype(request):
-    """设置自定义状态（动作编排）"""
-    try:
-        params = await request.json()
-        sessionid = params.get('sessionid', '')
-        avatar_session = get_session(request, sessionid)
-        if avatar_session is None:
-            return json_error("session not found")
-        avatar_session.set_custom_state(params['audiotype'])
-        return json_ok()
-    except Exception as e:
-        logger.exception('set_audiotype exception:')
-        return json_error(str(e))
-
-
-async def record(request):
-    """录制控制"""
-    try:
-        params = await request.json()
-        sessionid = params.get('sessionid', '')
-        avatar_session = get_session(request, sessionid)
-        if avatar_session is None:
-            return json_error("session not found")
-        if params['type'] == 'start_record':
-            avatar_session.start_recording()
-        elif params['type'] == 'end_record':
-            avatar_session.stop_recording()
-        return json_ok()
-    except Exception as e:
-        logger.exception('record exception:')
-        return json_error(str(e))
-
-
-async def set_emotion(request):
-    """Set the avatar's emotion (ditto backend).
-
-    Accepts an emotion name ("happy", "surprise", ...), an index 0..7, a list
-    of indices (soft mix), or null to clear back to the default. For the
-    ditto backend this drives the motion model's 8-class conditioning.
-    Other backends answer `unsupported`.
-    """
-    try:
-        params = await request.json()
-        sessionid = params.get('sessionid', '')
-        avatar_session = get_session(request, sessionid)
-        if avatar_session is None:
-            return json_error("session not found")
-        if not hasattr(avatar_session, 'set_emotion'):
-            return json_error("emotion is only supported by the ditto backend")
-        try:
-            avatar_session.set_emotion(params.get('emotion'))
-        except ValueError as e:
-            return json_error(str(e))
-        return json_ok(data={"emotion": avatar_session.current_emotion()})
-    except Exception as e:
-        logger.exception('set_emotion exception:')
         return json_error(str(e))
 
 
@@ -323,7 +290,6 @@ async def admin_sessions(request):
                 sessions_info.append({
                     "sessionid": sid,
                     "speaking": False,
-                    "recording": False,
                     "building": True,
                 })
                 continue
@@ -331,7 +297,6 @@ async def admin_sessions(request):
             s_data = {
                 "sessionid": sid,
                 "speaking": avatar_session.is_speaking() if hasattr(avatar_session, 'is_speaking') else False,
-                "recording": getattr(avatar_session, 'recording', False),
                 "building": False,
             }
             if s_opt:
@@ -341,7 +306,6 @@ async def admin_sessions(request):
                     "REF_FILE": getattr(s_opt, "REF_FILE", ""),
                     "transport": getattr(s_opt, "transport", ""),
                     "batch_size": getattr(s_opt, "batch_size", 0),
-                    "customopt": getattr(s_opt, "customopt", []),
                 })
             sessions_info.append(s_data)
         return json_ok(data={"sessions": sessions_info})
@@ -431,8 +395,6 @@ def setup_routes(app):
     app.router.add_post("/human", human)
     app.router.add_post("/humanaudio", humanaudio)
     app.router.add_post("/set_emotion", set_emotion)
-    app.router.add_post("/set_audiotype", set_audiotype)
-    app.router.add_post("/record", record)
     app.router.add_post("/interrupt_talk", interrupt_talk)
     app.router.add_post("/is_speaking", is_speaking)
     app.router.add_get("/api/admin/config", admin_config)

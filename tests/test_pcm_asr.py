@@ -36,8 +36,7 @@ def make_opt(fps=25, batch_size=16):
 
 def make_parent_stub():
     return types.SimpleNamespace(
-        custom_audiotype=0, quit_event=None,
-        get_custom_audio_stream=lambda typ: None,
+        quit_event=None,
     )
 
 

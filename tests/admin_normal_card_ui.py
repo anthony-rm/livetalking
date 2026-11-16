@@ -20,10 +20,10 @@ SHOTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAKE = {
     "code": 0, "msg": "ok",
     "data": {"sessions": [{
-        "sessionid": "live-abc-999", "speaking": True, "recording": True,
+        "sessionid": "live-abc-999", "speaking": True,
         "building": False, "model": "remote", "avatar_id": "anthony007",
         "REF_FILE": "en-US-JennyNeural", "transport": "webrtc",
-        "batch_size": 8, "customopt": [{"imgpath": "/x", "audiotype": 1}],
+        "batch_size": 8,
     }]},
 }
 
@@ -65,8 +65,6 @@ def main():
             ("model", "remote"),
             ("voice ref", "en-US-JennyNeural"),
             ("speaking badge", "Speaking"),
-            ("recording badge", "Recording"),
-            ("custom actions", "audiotype"),
         ]:
             check(f"renders {label}", needle in text, "" if needle in text else text[:150])
 

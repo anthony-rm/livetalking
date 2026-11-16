@@ -147,17 +147,54 @@ def load_model(_arg=None):
     # the two 5-D GridSample nodes, with the grid samples run in torch. Needed
     # because the prebuilt warp engine embeds the TRT-8 grid_sample_3d plugin.
     # Measured: 124.6 ms -> 24.4 ms per frame (5.1x), same numerics.
+    #
+    # render_size picks the engine set by its FEATURE EDGE (E = render/8 —
+    # the SPADE decoder upsamples 8x; TRTWarpHybrid reports E from the
+    # engine's segC input shape):
+    #   render 512 -> E=64 (warp+decode ~50 ms/frame)
+    #   render 256 -> E=32 (warp+decode ~25 ms/frame; paste matrix scaled)
+    # Resolution cost is real but bounded: the 512 path is the same face at
+    # 4x the pixels; the 256 render covers the same crop region (proven by
+    # PSNR 23 dB against the 512 render downsampled, and by the paste bbox
+    # equality at Mc = [M_lin * (512/pred_w) | b]).
     warp = None
+    render_size = os.environ.get("DITTO_RENDER_SIZE", "auto").strip().lower()
+    cfg_base = os.path.dirname(DITTO_WEIGHTS.rstrip("/"))
+    if render_size == "auto":
+        # Prefer the 256 lane when its engines exist: same face, quarter the
+        # render pixels, and it is what keeps delivery at the 25 fps audio
+        # rate on this box. An explicit 512 forces the full-resolution lane.
+        cand = os.path.join(cfg_base, "warp_r256_engines")
+        render_size = 256 if os.path.exists(
+            os.path.join(cand, "hyb_segB.engine")) else 512
+    else:
+        render_size = int(render_size)
+    if render_size not in (256, 512):
+        raise ValueError(f"DITTO_RENDER_SIZE must be auto, 256 or 512, "
+                         f"got {render_size}")
     hybrid_dir = os.environ.get("DITTO_WARP_ENGINE_DIR", "")
+    if not hybrid_dir and render_size == 256:
+        cand = os.path.join(cfg_base, "warp_r256_engines")
+        if os.path.exists(os.path.join(cand, "hyb_segB.engine")):
+            hybrid_dir = cand
     if not hybrid_dir:
-        cand = os.path.join(os.path.dirname(DITTO_WEIGHTS.rstrip("/")),
-                            "warp_hybrid_engines")
+        cand = os.path.join(cfg_base, "warp_hybrid_engines")
         if os.path.exists(os.path.join(cand, "hyb_segB.engine")):
             hybrid_dir = cand
     if hybrid_dir:
         _install_cuda_shim()
         from avatars.ditto.trt_warp_hybrid import TRTWarpHybrid
         warp = TRTWarpHybrid(hybrid_dir, device=dev)
+        engine_edge = warp.feature_edge
+        if render_size == 256 and engine_edge != 32:
+            raise RuntimeError(
+                f"DITTO_RENDER_SIZE=256 but warp engines have feature edge "
+                f"{engine_edge} (need 32) — build warp_r256_engines (scratch "
+                f"export_r256.py) or unset the override")
+        if render_size == 512 and engine_edge not in (64, None):
+            raise RuntimeError(
+                f"DITTO_RENDER_SIZE=512 but warp engines have feature edge "
+                f"{engine_edge} (need 64)")
         logger.info("[ditto] warp: TRT-10 hybrid engines from %s", hybrid_dir)
 
     # TRT LMDM lane: the online DDIM sampler stays in numpy on the host; each
@@ -182,15 +219,24 @@ def load_model(_arg=None):
     # ms/frame) — the dense-motion hourglass is already compute-saturated at
     # B=1, batching only removes launch overhead. Mixed = 50.4 ms/frame.
     dec_b10 = os.environ.get("DITTO_DECODE_B10_ENGINE", "")
+    if not dec_b10 and render_size == 256:
+        cand = os.path.join(cfg_base, "warp_r256_engines",
+                            "decoder_b10_r256_fp16.engine")
+        if os.path.exists(cand):
+            dec_b10 = cand
     if not dec_b10:
-        cand = os.path.join(os.path.dirname(DITTO_WEIGHTS.rstrip("/")),
-                            "warp_b10_engines", "decoder_b10_fp16.engine")
+        cand = os.path.join(cfg_base, "warp_b10_engines",
+                            "decoder_b10_fp16.engine")
         if os.path.exists(cand):
             dec_b10 = cand
     if dec_b10 and os.path.exists(dec_b10):
         _install_cuda_shim()
         from avatars.ditto.trt_decode_batch import TRTDecodeBatch
         dec = TRTDecodeBatch(dec_b10, device=dev)
+        if render_size == 256 and tuple(dec.in_buf.shape)[2:] != (32, 32):
+            raise RuntimeError(
+                f"DITTO_RENDER_SIZE=256 but decode engine expects "
+                f"{tuple(dec.in_buf.shape)} (need (B,256,32,32))")
         logger.info("[ditto] decode: batched engine %s", dec_b10)
         return {
             "cond": ConditionHandler(**cond_cfg),
@@ -259,12 +305,37 @@ def warm_up(batch_size, model):
     from core.atomic_components.motion_stitch import transform_keypoint
 
     parts = model
-    zero = np.zeros((1, 32, 16, 64, 64), dtype=np.float32)
+    warp = parts["warp"]
+    # Seed the zero volume with the ENGINE's feature edge so the warmup
+    # exercises the lane actually wired (512 -> E=64, 256 -> E=32).
+    edge = getattr(warp, "feature_edge", None)
+    zero = np.zeros((1, 32, 16, edge or 64, edge or 64), dtype=np.float32)
     x_s_info = {k: np.zeros(s, dtype=np.float32) for k, s in _X_S_SHAPES.items()}
     x_s = transform_keypoint(x_s_info)          # dict -> (bs, num_kp, 3)
     f_3d = parts["warp"](zero, x_s, x_s.copy())
     parts["dec"](f_3d)
     logger.info("[ditto] warmup done (warp+decode primed)")
+
+
+def _shrink_f_s_list(f_s_list, edge: int):
+    """Bilinear-downsample the stored 64-edge volumes to `edge` (256 render ->
+    32). Registration always writes 64-edge f_s (the extractor resizes its
+    input to 256^2 regardless of crop dsize), so the shrink is a pure
+    resolution choice, done once per avatar load.
+
+    Samples per frame: N*C*D downsampled H*W through one interpolate; done on
+    the torch default device so a cuda box pays ~3 ms, and (~75 frames of
+    4 MB fp32) fits any GPU. Returns the same length list, fp16 as stored."""
+    import torch.nn.functional as TF  # resolved lazily; pyright misses the subimport
+    src = np.stack(f_s_list)                        # (N,32,16,64,64) fp16
+    t = torch.from_numpy(src.astype(np.float32))
+    n, c, d, h, w = t.shape
+    t = t.permute(0, 1, 2, 3, 4).reshape(n * c * d, 1, h, w)
+    t = TF.interpolate(t, size=(edge, edge), mode="bilinear",
+                       align_corners=False)
+    t = t.reshape(n, c, d, edge, edge)
+    out = t.numpy().astype(np.float16)
+    return [out[i] for i in range(n)]
 
 
 @register("avatar", "ditto")
@@ -322,11 +393,32 @@ class DittoReal(BaseAvatar):
         self.warp = self.parts["warp"]
         self.dec = self.parts["dec"]
 
+        # render-size lane: engines carry the feature edge (64 -> render
+        # 512, 32 -> render 256; render = edge * 8 — the SPADE decoder
+        # upsamples 8x). Artifacts ALWAYS store 64-edge f_s — the extractor
+        # resized its input to 256^2 at registration regardless of crop
+        # dsize — so the 256 lane just shrinks the volumes at load.
+        edge = getattr(self.warp, "feature_edge", None) \
+            or int(self.marker["render_size"]) // 8
+        marker_edge = int(self.marker["render_size"]) // 8
+        self.render_edge = edge
+        if edge > marker_edge:
+            raise art.ArtifactError(
+                f"artifact render_size={self.marker['render_size']} cannot "
+                f"drive {edge * 8}-render engines; re-register the avatar "
+                f"at a larger crop")
+        if edge < marker_edge:
+            logger.info("[ditto] render %d lane: shrinking f_s %d -> %d edge "
+                        "(%d frames)", edge * 8, marker_edge, edge,
+                        self.n_frames)
+            self.f_s_list = _shrink_f_s_list(self.f_s_list, edge)
+
         # ── streaming state (§3: why a stateless batch API cannot host Ditto) ──
         # Cond row buffer, SEEDED with one window of silence so the first pass
         # latches d0 without waiting for 3.2 s of speech (upstream seeds zeros
         # in front of the audio for the same reason).
         self._audio_feat = np.zeros((self.a2m.seq_frames, FEAT_DIM), np.float32)
+        self._emo_rows: List = []   # per-row emotion tags, parallel to _audio_feat
         self._local_idx = 0        # window start inside _audio_feat
         self._global_idx = 0       # absolute feature-frame counter (cond idx)
         self._res_kp_seq = None    # fused LMDM output
@@ -337,6 +429,7 @@ class DittoReal(BaseAvatar):
         self._lmdm_passes = 0
         self._idle_xd: Optional[dict] = None
         self._mask_cache: Optional[np.ndarray] = None
+        self._emo_override = None   # session-sticky emotion (set_emotion)
         # bbox + crop-matrix per (frame idx, render size), so paste-back never
         # re-derives the warped-mask bounds; 75 frames -> ~75 tiny tuples.
         self._paste_geom_cache: dict = {}
@@ -489,23 +582,26 @@ class DittoReal(BaseAvatar):
             self._gen_frame_idx += 1
 
         if hasattr(self.dec, "batch"):
+            # Warp output is (C=256, D, H, W) flattened as stored: the graph's
+            # reshape is edge-dependent (E=64 -> 512 render, E=32 -> 256).
+            e = self.render_edge
             if device.type != "cuda":
                 # No batched engine without CUDA (tests); synchronous path.
                 imgs = self.dec(np.stack(
-                    [self.warp(f_s[None], x_s, x_d).reshape(256, 64, 64)
+                    [self.warp(f_s[None], x_s, x_d).reshape(256, e, e)
                      for x_s, x_d, f_s in
                      zip(x_s_batch, x_d_batch, f_s_batch)]))
                 imgs = imgs.permute(0, 2, 3, 1).clamp(0, 1).mul(255) \
                     .round().to(torch.uint8).cpu().numpy()
                 return [np.ascontiguousarray(img) for img in imgs]
             # Batched decode lane: one engine call per window. The per-frame
-            # hybrid warp feeds it (numpy in); decode returns (B,3,512,512)
+            # hybrid warp feeds it (numpy in); decode returns (B,3,H,W)
             # torch in sigmoid range. The uint8 conversion happens ON GPU and
             # the host copy is ASYNC into pinned memory (a synchronous .cpu()
             # stalled the inference thread ~27 ms/frame with the GPU idle).
             # Markers flow through the batch contract; paste_back_frame pulls
             # the pixels from the staged ring in strict emission order.
-            f_3d = [self.warp(f_s[None], x_s, x_d).reshape(256, 64, 64)
+            f_3d = [self.warp(f_s[None], x_s, x_d).reshape(256, e, e)
                     for x_s, x_d, f_s in zip(x_s_batch, x_d_batch, f_s_batch)]
             imgs = self.dec(np.stack(f_3d))
             imgs = imgs.permute(0, 2, 3, 1).clamp(0, 1).mul(255) \
@@ -561,9 +657,12 @@ class DittoReal(BaseAvatar):
     def _paste_geom(self, idx: int, pred_h: int, pred_w: int):
         """(M_crop 2x3, bbox, w, h) for one artifact frame, computed on demand.
 
-        Keyed by idx AND the render-crop size, because the 512-crop is only
-        correct for a 512 render; a 256-render artifact maps the crop through
-        the same M but to a quarter-sized bbox.
+        Keyed by idx AND the render-crop size: the same artifact matrix maps
+        a 512 render 1:1, but a smaller render covers the SAME crop region at
+        fewer pixels — the linear part scales by crop_dsize/pred_w while the
+        translation stays (crop origin maps to the same frame position; the
+        probe at scratch:semantics_256.py verified the scaled bbox equals the
+        512 bbox, and a face pasted through it lands correctly).
         """
         key = (idx, pred_h, pred_w)
         geom = self._paste_geom_cache.get(key)
@@ -573,16 +672,18 @@ class DittoReal(BaseAvatar):
             h, w = frame.shape[:2]
             corners = np.array([[0, 0], [pred_w, 0], [0, pred_h],
                                 [pred_w, pred_h]], dtype=np.float32)
-            tx = M[0, :2] @ corners.T + M[0, 2]
-            ty = M[1, :2] @ corners.T + M[1, 2]
+            crop_dsize = float(self.marker["render_size"])
+            s = crop_dsize / float(pred_w)
+            Mc = M[:2].copy()
+            Mc[:, :2] *= s
+            tx = Mc[0, :2] @ corners.T + Mc[0, 2]
+            ty = Mc[1, :2] @ corners.T + Mc[1, 2]
             x0 = max(0, int(np.floor(tx.min())))
             x1 = min(w, int(np.ceil(tx.max())))
             y0 = max(0, int(np.floor(ty.min())))
             y1 = min(h, int(np.ceil(ty.max())))
             # NOTE: M[:2] is a contiguous view of the artifact matrix, so
-            # ascontiguousarray returns the SAME memory and the translation
-            # shift below would corrupt M_c2o_list in place. Copy explicitly.
-            Mc = M[:2].copy()
+            # a copy is mandatory before the in-place shift below.
             Mc[0, 2] -= x0
             Mc[1, 2] -= y0
             geom = (Mc, (x0, x1, y0, y1), w, h)

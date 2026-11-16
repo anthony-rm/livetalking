@@ -29,7 +29,6 @@ POST /offer
 | `avatar` | 否 | string | 启动参数值 | 指定数字人 ID |
 | `refaudio` | 否 | string | — | 参考音频 |
 | `reftext` | 否 | string | — | 参考文本 |
-| `custom_config` | 否 | string | — | 动作编排配置 JSON 字符串 |
 
 **响应** (200):
 
@@ -64,7 +63,6 @@ POST /whep
 | `tts` | 否 | string | — | TTS 引擎 |
 | `tts_server` | 否 | string | — | TTS 服务地址 |
 | `tts_speed` | 否 | number | — | TTS 语速 |
-| `custom_config` | 否 | string | — | 动作编排配置 JSON 字符串 |
 
 **Body**: SDP offer 裸文本，例如：
 
@@ -220,61 +218,7 @@ POST /is_speaking
 
 ---
 
-## 7. 录制控制
-
-控制服务器端的渲染录制。
-
-```
-POST /record
-```
-
-| 参数 | 必填 | 类型 | 说明 |
-|------|------|------|------|
-| `sessionid` | 是 | string | 会话 ID |
-| `type` | 是 | string | `start_record`: 开始录制; `end_record`: 停止并合成 |
-
-**响应**:
-
-```json
-{ "code": 0, "msg": "ok" }
-```
-
----
-
-## 8. 下载录像
-
-下载录制完成的 MP4 文件。
-
-```
-GET /record/{sessionid}
-```
-
-**路径参数**: `sessionid` — 会话 ID
-
-**响应**: MP4 文件流。若文件不存在返回 404。
-
----
-
-## 9. 设置动作编排 (Audiotype)
-
-```
-POST /set_audiotype
-```
-
-| 参数 | 必填 | 类型 | 说明 |
-|------|------|------|------|
-| `sessionid` | 是 | string | 会话 ID |
-| `audiotype` | 是 | int | 预定义的动作/状态索引 |
-
-**响应**:
-
-```json
-{ "code": 0, "msg": "ok" }
-```
-
----
-
-## 10. SSE 事件流
+## 7. SSE 事件流
 
 ```
 GET /sse?sessionid=<sessionid>

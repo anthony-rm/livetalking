@@ -319,8 +319,7 @@ def test_admin_sessions_lists_a_building_session(monkeypatch, manager):
     manager.sessions["live-1"] = FakeAvatar()
     manager.sessions["live-1"].opt = types.SimpleNamespace(
         model="remote", avatar_id="a1", REF_FILE="", transport="webrtc",
-        batch_size=8, customopt=[])
-    manager.sessions["live-1"].recording = False
+        batch_size=8)
     monkeypatch.setattr(routes, "session_manager", manager)
 
     status, body = _call(_app_with(FakeRTC()), "GET", "/api/admin/sessions")

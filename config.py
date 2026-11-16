@@ -3,7 +3,6 @@
 ###############################################################################
 
 import argparse
-import json
 import os
 
 try:
@@ -72,10 +71,6 @@ def parse_args():
                              "layer still starts; WebRTC/session creation is disabled. "
                              "Useful for testing routes without downloading checkpoints.")
 
-    # ─── 自定义动作和多形象 ────────────────────────────────────────────
-    parser.add_argument('--customvideo_config', type=str, default='',
-                        help="custom action json")
-
     # ─── TTS ───────────────────────────────────────────────────────────
     parser.add_argument('--tts', type=str, default='edgetts',
                         help="tts plugin: edgetts/gpt-sovits/cosyvoice/fishtts/tencent/doubao/indextts2/azuretts/qwentts")
@@ -138,11 +133,5 @@ def parse_args():
 
     # ─── 正式解析 CLI 参数 ─────────────────────────────────────────────
     opt = parser.parse_args()
-
-    # ─── 后处理 ────────────────────────────────────────────────────────
-    opt.customopt = []
-    if opt.customvideo_config:
-        with open(opt.customvideo_config, 'r') as f:
-            opt.customopt = json.load(f)
 
     return opt

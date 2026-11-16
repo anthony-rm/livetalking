@@ -23,11 +23,9 @@ import collections
 from numpy.typing import NDArray
 import torch
 import numpy as np
-import subprocess
 import os
 import time
 import cv2
-import glob
 import resampy
 import queue
 from queue import Queue
@@ -47,7 +45,7 @@ from av import AudioFrame, VideoFrame
 from fractions import Fraction
 
 from utils.logger import logger
-from utils.image import read_imgs,mirror_index
+from utils.image import mirror_index
 
 # class State(Enum):
 #     INIT=0
@@ -69,19 +67,8 @@ class BaseAvatar:
         self.sessionid = self.opt.sessionid
 
         self.speaking = False
-        self.recording = False
-        self._record_video_pipe = None
-        self._record_audio_pipe = None
-        self.width = self.height = 0
 
-        self.custom_audiotype = 0 # 0: normal, 1: sinlence, >1: custom audio
-        self.custom_img_cycle = {}
-        self.custom_audio_cycle = {}
-        self.custom_audio_index = {}
-        self.custom_index = {}
         self.msgqueues = []
-        # self.custom_opt = {}
-        self.__loadcustom()
 
         self.batch_size = opt.batch_size
         # Bounded res_frame_queue: unbounded growth would OOM the server under
@@ -200,34 +187,12 @@ class BaseAvatar:
             self.tts.flush_talk()
         if hasattr(self, 'asr') and hasattr(self.asr, 'flush_talk'):
             self.asr.flush_talk()
-        self.custom_audiotype = 0  
 
     # def flush(self):
     #     self.flush_talk()
 
     def is_speaking(self) -> bool:
         return self.speaking
-    
-    def __loadcustom(self):
-        if not hasattr(self.opt, 'customopt') or not self.opt.customopt:
-            return
-        for item in self.opt.customopt:
-            logger.info(item)
-            input_img_list = glob.glob(os.path.join(item['imgpath'], '*.[jpJP][pnPN]*[gG]'))
-            input_img_list = sorted(input_img_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
-            self.custom_img_cycle[item['audiotype']] = read_imgs(input_img_list)
-            if item.get('audiopath'):
-                self.custom_audio_cycle[item['audiotype']], sample_rate = sf.read(item['audiopath'], dtype='float32')
-                self.custom_audio_index[item['audiotype']] = 0
-            self.custom_index[item['audiotype']] = 0
-            # self.custom_opt[item['audiotype']] = item
-
-    def init_customindex(self):
-        self.custom_audiotype = 0
-        for key in self.custom_audio_index:
-            self.custom_audio_index[key] = 0
-        for key in self.custom_index:
-            self.custom_index[key] = 0
 
     def add_msgqueue(self, msgqueue):
         self.msgqueues.append(msgqueue)
@@ -241,94 +206,13 @@ class BaseAvatar:
             logger.info("notify:%s", eventpoint)
             self.send_msg(json.dumps(eventpoint))
 
-    def start_recording(self):
-        if self.recording:
-            return
-        command = ['ffmpeg',
-                    '-y', '-an',
-                    '-f', 'rawvideo',
-                    '-vcodec','rawvideo',
-                    '-pix_fmt', 'bgr24',
-                    '-s', "{}x{}".format(self.width, self.height),
-                    '-r', str(25),
-                    '-i', '-',
-                    '-pix_fmt', 'yuv420p', 
-                    '-vcodec', "h264",
-                    f'temp{self.opt.sessionid}.mp4']
-        self._record_video_pipe = subprocess.Popen(command, shell=False, stdin=subprocess.PIPE)
-
-        acommand = ['ffmpeg',
-                    '-y', '-vn',
-                    '-f', 's16le',
-                    '-ac', '1',
-                    '-ar', '16000',
-                    '-i', '-',
-                    '-acodec', 'aac',
-                    f'temp{self.opt.sessionid}.aac']
-        self._record_audio_pipe = subprocess.Popen(acommand, shell=False, stdin=subprocess.PIPE)
-
-        self.recording = True
-    
-    def record_video_data(self, image):
-        if self.width == 0:
-            self.height, self.width, _ = image.shape
-        if self.recording:
-            self._record_video_pipe.stdin.write(image.tobytes()) #tostring()
-
-    def record_audio_data(self, frame):
-        if self.recording:
-            self._record_audio_pipe.stdin.write(frame.tobytes())
-		
-    def stop_recording(self):
-        if not self.recording:
-            return
-        self.recording = False 
-        self._record_video_pipe.stdin.close()
-        self._record_video_pipe.wait()
-        self._record_audio_pipe.stdin.close()
-        self._record_audio_pipe.wait()
-        
-        record_path = os.path.join('data', 'record')
-        os.makedirs(record_path, exist_ok=True)
-        output_file = os.path.join(record_path, f"{self.opt.sessionid}.mp4")
-        
-        temp_aac = f"temp{self.opt.sessionid}.aac"
-        temp_mp4 = f"temp{self.opt.sessionid}.mp4"
-        
-        cmd_combine_audio = f"ffmpeg -y -i {temp_aac} -i {temp_mp4} -c:v copy -c:a copy {output_file}"
-        os.system(cmd_combine_audio)
-        
-        # 删除临时文件
-        try:
-            os.remove(temp_aac)
-            os.remove(temp_mp4)
-        except Exception as e:
-            logger.error(f"Error removing temp files: {e}")
-
     # def mirror_index(self, size, index):
     #     turn = index // size
     #     res = index % size
     #     if turn % 2 == 0:
     #         return res
     #     else:
-    #         return size - res - 1 
-    
-    def get_custom_audio_stream(self, audiotype):
-        idx = self.custom_audio_index[audiotype]
-        stream = self.custom_audio_cycle[audiotype][idx:idx+self.chunk]
-        self.custom_audio_index[audiotype] += self.chunk
-        if self.custom_audio_index[audiotype] >= self.custom_audio_cycle[audiotype].shape[0]:
-            self.custom_audiotype = 1
-        return stream
-    
-    def set_custom_state(self, audiotype, reinit=True):
-        print('set_custom_state:', audiotype)
-        if self.custom_audio_index.get(audiotype) is None:
-            return
-        self.custom_audiotype = audiotype
-        if reinit:
-            self.custom_audio_index[audiotype] = 0
-            self.custom_index[audiotype] = 0
+    #         return size - res - 1
 
     # ========================== 核心渲染及 Pipeline 桥接 ==========================
     def get_avatar_length(self):
@@ -450,8 +334,6 @@ class BaseAvatar:
                     pending.append((index, audio_frames, None, True))
                     index = index + self.batch_size
                 else:
-                    if current_speaking and not last_speaking and self.custom_index.get(1) is not None: #从静音到说话切换,并且有自定义静态视频
-                        index = 0
                     try:
                         token = self._submit_batch(index, audiofeat_batch)
                     except Exception:
@@ -606,14 +488,8 @@ class BaseAvatar:
 
                 if audio_frames[0].type!=0 and audio_frames[1].type!=0: #全为静音数据，只需要取fullimg
                     self.speaking = False
-                    audiotype = audio_frames[0].type
-                    if self.custom_index.get(audiotype) is not None: #有自定义视频
-                        mirindex = mirror_index(len(self.custom_img_cycle[audiotype]),self.custom_index[audiotype])
-                        target_frame = self.custom_img_cycle[audiotype][mirindex]
-                        self.custom_index[audiotype] += 1
-                    else:
-                        target_frame = self.frame_list_cycle[idx]
-                    
+                    target_frame = self.frame_list_cycle[idx]
+
                     if enable_transition:
                         # 说话→静音过渡
                         if time.time() - _transition_start < _transition_duration and _last_speaking_frame is not None:
@@ -648,7 +524,6 @@ class BaseAvatar:
                 
                 # 使用统一输出接口推送视频帧
                 self.output.push_video_frame(combine_frame)
-                self.record_video_data(combine_frame)
 
                 for audio_frame in audio_frames:
                     # Enqueue for the audio pacing thread, which feeds the track
@@ -663,7 +538,6 @@ class BaseAvatar:
                     frame = (audio_frame.data * 32767).astype(np.int16)
                     if audio_frame.type != 1:
                         self.audio_out_queue.put((frame, audio_frame.userdata))
-                    self.record_audio_data(frame)
                     
                 # if self.opt.transport == 'virtualcam' and hasattr(self.output, '_cam') and self.output._cam:
                 #     self.output._cam.sleep_until_next_frame()
@@ -682,8 +556,7 @@ class BaseAvatar:
 
     def render(self,quit_event):
         self.quit_event = quit_event
-        
-        self.init_customindex()
+
         self.tts.render(quit_event)
 
         # Fix 3: ASR (whisper/mel/hubert) feature extraction now runs in its own
