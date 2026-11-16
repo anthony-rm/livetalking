@@ -17,12 +17,15 @@ import pytest
 from avatars.ditto_avatar import DittoReal
 
 
-def make_backend(frame_bgr, M_c2o, mask_value=1.0):
+def make_backend(frame_bgr, M_c2o, mask_value=1.0, render_size=None):
+    """render_size defaults to the frame edge so legacy cases (identity
+    matrix, same-size render) keep scale factor 1."""
     obj = object.__new__(DittoReal)
     obj.frame_list_cycle = [frame_bgr]
     obj.M_c2o_list = [np.asarray(M_c2o, dtype=np.float32)]
     obj._paste_geom_cache = {}
     h, w = frame_bgr.shape[:2]
+    obj.marker = {"render_size": int(render_size or w)}
     obj._mask_cache = np.full((h, w, 3), mask_value, dtype=np.float32)
     return obj
 
@@ -79,7 +82,7 @@ def test_paste_back_does_not_mutate_the_artifact_matrix():
 
 def test_crop_matrix_is_cached_per_render_size():
     frame = np.zeros((128, 128, 3), np.uint8)
-    backend = make_backend(frame, IDENTITY)
+    backend = make_backend(frame, IDENTITY, render_size=64)
 
     first = backend._paste_geom(0, 64, 64)
     again = backend._paste_geom(0, 64, 64)
@@ -88,13 +91,36 @@ def test_crop_matrix_is_cached_per_render_size():
     assert first is again
     assert first is not other
     assert first[1] == (0, 64, 0, 64)
-    assert other[1] == (0, 32, 0, 32)
+    # A half-size render is a RESIZE of the crop, not a smaller crop: it must
+    # cover the same 64-px crop region, not a 32-px one.
+    assert other[1] == (0, 64, 0, 64)
+
+
+def test_scaled_render_stretches_linear_part_only():
+    """A pred half the crop dsize maps the crop region 1:1 with a doubled
+    linear part; translation stays (crop origin to frame origin), so the
+    bbox equals the full-render bbox."""
+    frame = np.zeros((128, 128, 3), np.uint8)
+    M = np.array([[2, 0, 10], [0, 2, 6], [0, 0, 1]], dtype=np.float32)
+    backend = make_backend(frame, M, render_size=64)
+
+    full = backend._paste_geom(0, 64, 64)
+    half = backend._paste_geom(0, 32, 32)
+
+    # bbox math: raw extent x [10, 138] y [6, 134], clamped to the 128-px
+    # frame -> (10, 128, 6, 128) for BOTH sizes (same region, same clamps).
+    assert full[1] == (10, 128, 6, 128)
+    assert half[1] == full[1]
+    assert np.allclose(half[0][:, :2], M[:2, :2] * 2)
+    # after the bbox-origin shift both translations are 0; compare against
+    # the unshifted law instead: half's linear part is full's * (64/32).
+    assert np.allclose(half[0][:, :2], full[0][:, :2] * 2)
 
 
 def test_translation_is_offset_by_the_bbox_origin():
     frame = np.zeros((128, 128, 3), np.uint8)
     shift = np.array([[1, 0, 40], [0, 1, 20], [0, 0, 1]], dtype=np.float32)
-    backend = make_backend(frame, shift)
+    backend = make_backend(frame, shift, render_size=32)
 
     Mc, bbox, _, _ = backend._paste_geom(0, 32, 32)
 

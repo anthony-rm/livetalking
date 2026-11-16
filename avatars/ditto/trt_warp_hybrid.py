@@ -66,7 +66,9 @@ class _Engine:
             self.engine = trt.Runtime(logger).deserialize_cuda_engine(f.read())
         self.ctx = self.engine.create_execution_context()
         self.in_dt = {}
+        self.shape_of = {}
         self.outputs = []
+        self.inputs = []
         out_specs = []
         for i in range(self.engine.num_io_tensors):
             nm = self.engine.get_tensor_name(i)
@@ -74,6 +76,8 @@ class _Engine:
             dt = _torch_dtype(self.engine.get_tensor_dtype(nm))
             if self.engine.get_tensor_mode(nm) == trt.TensorIOMode.INPUT:
                 self.in_dt[nm] = dt
+                self.shape_of[nm] = shp
+                self.inputs.append((nm, shp))
             else:
                 out_specs.append((nm, shp, dt))
         for nm, shp, dt in out_specs:
@@ -85,6 +89,15 @@ class _Engine:
     def run(self, feeds):
         self._keep = list(feeds.values())
         for nm, t in feeds.items():
+            # TRT does NOT validate tensor sizes against the engine's static
+            # shapes — a wrong-sized buffer is read as far as the engine
+            # needs and silently yields garbage. Check here: a mismatched
+            # lane (e.g. 64-edge features into a 32-edge engine) must fail
+            # loudly, not render nonsense at a great frame rate.
+            want = self.shape_of[nm]
+            if tuple(t.shape) != want:
+                raise ValueError(
+                    f"engine input {nm} wants {want}, got {tuple(t.shape)}")
             t = t.to(self.in_dt[nm]).contiguous()
             self._keep.append(t)
             self.ctx.set_tensor_address(nm, t.data_ptr())
@@ -105,7 +118,53 @@ class TRTWarpHybrid:
         self.a = _Engine(os.path.join(engine_dir, "hyb_segA.engine"), trt_logger, device)
         self.b = _Engine(os.path.join(engine_dir, "hyb_segB.engine"), trt_logger, device)
         self.c = _Engine(os.path.join(engine_dir, "hyb_segC.engine"), trt_logger, device)
-        logger.info("[ditto] hybrid warp (TRT 10, plugin-free) from %s", engine_dir)
+        self._resolve_io_names()
+        logger.info("[ditto] hybrid warp (TRT 10, plugin-free) from %s "
+                    "(feature edge %d)", engine_dir, self.feature_edge)
+
+    def _resolve_io_names(self):
+        """Derive the cut-point tensor names from the engines themselves.
+
+        The 512 lane was built from upstream's shipped ONNX (GridSample
+        node names); engines exported from torch (the 256 lane) carry
+        GridSample3D names. Keying by role rather than by literal string
+        serves both — and any future re-export.
+        """
+        base = {"feature_3d", "kp_source", "kp_driving"}
+        b_inputs = set(self.b.in_dt)
+        cut = b_inputs - base
+        assert len(cut) == 1, f"segB has unexpected inputs: {sorted(b_inputs)}"
+        self.gs1_in = cut.pop()
+
+        a_outs = [nm for nm, _ in self.a.outputs]
+        assert len(a_outs) == 2, f"segA outputs: {a_outs}"
+        # vol is the (bs*(1+kp), 4, D, H, W) source pyramid; grid ends in 3.
+        vol_shp = self._shape_of(self.a.outputs, a_outs[0])
+        self.a_out_vol, self.a_out_grid = (
+            (a_outs[0], a_outs[1]) if vol_shp[-1] != 3
+            else (a_outs[1], a_outs[0]))
+
+        outs_b = {nm: shp for nm, shp in ((nm, buf.shape) for nm, buf in self.b.outputs)}
+        occ = [nm for nm, shp in outs_b.items() if len(shp) == 4]
+        deform = [nm for nm, shp in outs_b.items() if len(shp) == 5]
+        assert len(occ) == 1 and len(deform) == 1, f"segB outputs: {outs_b}"
+        self.b_out_occ = occ[0]
+        self.b_out_deform = deform[0]
+
+        c_inputs = [nm for nm in self.c.in_dt]
+        assert self.b_out_occ in c_inputs and len(c_inputs) == 2, \
+            f"segC inputs {c_inputs} do not carry segB's occlusion"
+        self.gs2_out = next(nm for nm in c_inputs if nm != self.b_out_occ)
+
+        gs2_shp = dict(self.c.inputs)[self.gs2_out]
+        self.feature_edge = int(gs2_shp[-1])
+
+    @staticmethod
+    def _shape_of(pairs, name):
+        for nm, buf in pairs:
+            if nm == name:
+                return tuple(buf.shape)
+        raise KeyError(name)
 
     @staticmethod
     def _grid_sample(vol, grid):
@@ -120,12 +179,12 @@ class TRTWarpHybrid:
         with TRTWarpHybrid._lock:
             base = {"feature_3d": f3d, "kp_source": kps, "kp_driving": kpd}
             a_out = self.a.run(base)
-            gs1 = self._grid_sample(a_out[A_OUT_VOL], a_out[A_OUT_GRID])
+            gs1 = self._grid_sample(a_out[self.a_out_vol], a_out[self.a_out_grid])
             b_feeds = dict(base)
-            b_feeds[GS1_IN] = gs1
+            b_feeds[self.gs1_in] = gs1
             b_out = self.b.run(b_feeds)
-            occ = b_out[B_OUT_OCC].clone()
-            warped = self._grid_sample(f3d, b_out[B_OUT_DEFORM])
-            c_out = self.c.run({GS2_OUT: warped, B_OUT_OCC: occ})
+            occ = b_out[self.b_out_occ].clone()
+            warped = self._grid_sample(f3d, b_out[self.b_out_deform])
+            c_out = self.c.run({self.gs2_out: warped, self.b_out_occ: occ})
             torch.cuda.current_stream().synchronize()
             return c_out["out"].clone().cpu().numpy()
