@@ -235,7 +235,75 @@ STATUS 2026-11-14 late: **decoder + warp BOTH on TRT 10, end-to-end measured.**
 - Box reboots by the teacher on crash ("崩了后短信给我重启吧") — expect uptime
   resets; /tmp loss; always `free -m` + `nvidia-smi` first.
 
-# PLAN_DITTO_SESSION_5c — resume point (2026-11-16, "paste-back overlap" session)
+# PLAN_DITTO_SESSION_6 — resume point (2026-11-16, "go for 256x256")
+
+## OUTCOME: render_size=256 lane SHIPPED — 12.6 -> 25.0 fps delivered
+
+The 256 lane was the last lever on the plan. It works, and it closes the
+throughput gap: delivery now equals the audio content rate (50 chunks/s =
+25 fps), so speech advances at real time instead of ~0.5x.
+
+    render ceiling:  69 ms/frame (14.5 fps)  ->  27.6 ms/frame (36 fps)
+    live delivered:  12.6 fps               ->  25.0 fps
+    drops/100:       2-5                    ->  7-15 (encoder now the limit)
+    paste-back:      14.3 ms                ->  14.0 ms
+
+## What a 256 render actually is (the verification the old plan demanded)
+
+`f_s` is ALWAYS stored 64-edge. The registrar's `_img_crop_to_bchw256`
+resizes its extractor input to 256^2 regardless of the crop `dsize`, so
+`f_s` shape does NOT follow render size. A 256 render is therefore a
+RESOLUTION CHOICE, not a re-registration: bilinearly shrink the stored
+volumes 64 -> 32 once at avatar load. Warp+decode are fully convolutional
+(proven with a half-volume through the real weights: PSNR 23 dB vs the 512
+render downsampled — same face, quarter pixels).
+
+Render = feature_edge * 8 (the SPADE decoder upsamples 8x). NOT *16.
+
+## The paste matrix law (proven, not assumed)
+
+A smaller render covers the SAME crop region, so
+
+    Mc = [ M_lin * (crop_dsize / pred_w) | b ]     # linear scales, b does not
+
+Verified two ways: the scaled bbox equals the 512 bbox exactly (wired:
+both (0,1080,0,1656)), and the pasted frame correlates 0.941 with the source
+in the masked region (mean|diff| 15.7/255). A naive unscaled Mc would shrink
+the face to half size in the middle of the frame.
+
+## The bug this session's own guard caught
+
+TRT does NOT validate `set_tensor_address` buffer sizes. Feeding 64-edge
+features to a 32-edge engine does not error — the engine reads the first
+quarter of the buffer and renders GARBAGE, fast (measured 20 fps of noise).
+`_Engine.run` now checks shapes against `shape_of` and raises. Any future
+engine/lane mismatch fails loudly instead of looking like a win.
+
+## Engines (box ~/ditto-weights/warp_r256_engines/)
+
+Built by scratch `export_r256.py` (B=1 warp hybrid segA/B/C + B=10 decoder,
+32-edge, fp16). Verified vs pytorch BEFORE wiring: warp mean|diff| 0.0002,
+decode 0.72/255, decoder batch-independence exact. segC needs STATIC shapes
+stamped on the cut-adjacent value_infos — the extractor leaves dim_params
+from the GridSample3D op, and TRT refuses to build segC without them.
+
+Auto-selection: engines present -> 256 lane. `DITTO_RENDER_SIZE=512` forces
+full resolution; `=256` demands the 256 engines.
+
+## Still open (unchanged, not regressed)
+
+- A/V residual: video advances 99.45% of real time vs audio 100% (-0.22 s per
+  40 s). Present BEFORE this work, unrelated to render size. The video PTS is
+  monotonic-clock derived, so the gap is dropped frames not being covered —
+  the fix is to fill the gap in PTS on drop, not to touch the render.
+- Encoder is now the ceiling at 720p (drops 7-15/100). `--video-scale 960` or
+  1080p is now affordable on the render side.
+- The sibling agent's emotion feature has a failing test
+  (`test_emotion_tag_does_not_leak_past_sentence_end`): no feature row ever
+  carries a tag. Proven NOT caused by the feat_queue size change (fails
+  identically at maxsize 2 and 30).
+
+# PLAN_DITTO_SESSION_5c — resume point (2026-11-16, "paste-back overlap")
 
 ## OUTCOME: the planned work was WRONG — measurement redirected it
 
