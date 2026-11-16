@@ -531,9 +531,23 @@ class BaseAvatar:
         period = 1.0 / 50.0
         next_tick = time.perf_counter()
         trace = os.environ.get("LT_AUDIO_TRACE") == "1"
+        # Content alignment: the ASR pairs each feature batch (rows for content
+        # [t, t+0.2)) with the audio chunks sitting RIGHT-CONTEXT ahead of it,
+        # so raw pacing plays audio ~10 chunks (0.2 s) before the lips move
+        # (measured: -0.15..-0.40 s persistent offset, never accumulates).
+        # Hold that lead in the pacer: emit silence until the queue has
+        # buffered audio_lead_chunks, then pace normally. The stream shifts
+        # bodily later by the ASR's right-context, which is exactly what the
+        # frames do — the two RTP timelines then line up.
+        lead = int(os.environ.get("LT_AUDIO_LEAD",
+                                  getattr(self.asr, "audio_lead_chunks", 0)) or 0)
         _next_report = next_tick + 0.5
         _dry = 0
         _pushed = 0
+        # delay line holding `lead` chunks: every chunk shifts 0.2 s later in
+        # order. As a side effect the buffer smooths brief render hiccups
+        # that today splice silence into words.
+        delay_line = collections.deque()
         while not quit_event.is_set():
             try:
                 chunk, userdata = self.audio_out_queue.get(block=True, timeout=0.01)
@@ -541,6 +555,14 @@ class BaseAvatar:
             except queue.Empty:
                 _dry += 1
                 chunk, userdata = silence, None
+            if lead:
+                delay_line.append((chunk, userdata))
+                if len(delay_line) <= lead:
+                    # still filling the line; the 50 Hz cadence continues on
+                    # silence
+                    chunk, userdata = silence, None
+                else:
+                    chunk, userdata = delay_line.popleft()
             self.output.push_audio_frame(chunk, userdata)
             next_tick += period
             now = time.perf_counter()

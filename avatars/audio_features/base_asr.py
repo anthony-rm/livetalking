@@ -72,14 +72,8 @@ class BaseASR:
     #return frame:audio pcm; type: 0-normal speak, 1-silence; eventpoint:custom event sync with audio
     def get_audio_frame(self)->AudioFrameData:        
         try:
-            if self.parent and self.parent.custom_audiotype>1: #播放自定义音频,优先播放完自定义动作,可以通过interrupt打断动作播放
-                frame = self.parent.get_custom_audio_stream(self.parent.custom_audiotype)
-                type = self.parent.custom_audiotype
-                return AudioFrameData(data=frame, type=type, userdata={})
-            else:
-                frame = self.queue.get(block=True,timeout=0.01)
-                return frame
-            #print(f'[INFO] get frame {frame.shape}')
+            frame = self.queue.get(block=True,timeout=0.01)
+            return frame
         except queue.Empty:
             frame = np.zeros(self.chunk, dtype=np.float32)
             return AudioFrameData(data=frame, type=1, userdata={})
@@ -120,6 +114,18 @@ class BaseASR:
                 break
             time.sleep(0.001)
         logger.info('ASR worker thread stop')
+
+    #: How many chunks of RIGHT-CONTEXT the feature extractor needs before a
+    #: window's rows exist: the frame for content t is rendered from a
+    #: window whose tail extends past t (e.g. HuBERT's 0.405 s window covers
+    #: ~0.2 s beyond the content its rows represent). The inference thread
+    #: pairs each feature batch with the same-iteration audio chunks, which
+    #: sit that much AHEAD of the batch's rows — so without compensation the
+    #: audio track runs ahead of the lips by exactly this amount, forever
+    #: (measured: -0.15..-0.40 s band, no accumulation over 56 s of speech).
+    #: The pacer holds this many chunks back to re-align them.
+    # (Class attribute: set by PcmASR to its measured right-context.)
+    audio_lead_chunks = 0
 
     def get_next_feat(self,block,timeout):        
         return self.feat_queue.get(block,timeout)
