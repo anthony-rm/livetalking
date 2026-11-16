@@ -42,6 +42,7 @@ MARKER = "ditto.json"
 F_S_DIR = "f_s"
 X_S_DIR = "x_s_info"
 FULL_IMGS_DIR = "full_imgs"
+EYE_STATE_FILE = "eye_state.npz"
 
 #: ``f_s`` is Bx32x16x64x64 per frame (see PLAN_DITTO.md §8.3), i.e. 2.1 M
 #: floats. fp16 keeps one 75-frame avatar near 315 MB instead of 630 MB.
@@ -68,6 +69,9 @@ def x_s_path(avatar_dir: str, frame_idx: int) -> str:
 
 def full_img_path(avatar_dir: str, frame_idx: int) -> str:
     return os.path.join(avatar_dir, FULL_IMGS_DIR, f"{frame_idx:08d}.png")
+
+def eye_state_path(avatar_dir: str) -> str:
+    return os.path.join(avatar_dir, EYE_STATE_FILE)
 
 
 # ─── tensors: device-safe by construction ─────────────────────────────────
@@ -142,6 +146,51 @@ def read_x_s_info(avatar_dir: str, frame_idx: int) -> dict:
         raise ArtifactError(f"missing {path}")
     with np.load(path, allow_pickle=False) as z:
         return {k: z[k] for k in z.files}
+
+
+def write_eye_state(avatar_dir: str, eye_open_lst, eye_ball_lst, n_frames: int) -> str:
+    """Store the registration's per-frame eyelid/gaze state as one .npz.
+
+    Registration already measured these (mediapipe face_mesh, 478 landmarks);
+    the backend blends them into the motion conditioning. The two arrays are
+    stacked to [n, 2] / [n, 6] float32 — the exact shapes
+    ConditionHandler.setup expects.
+    """
+    eye_open = np.stack([
+        np.asarray(e, dtype=np.float32).reshape(-1)[:2] for e in eye_open_lst
+    ]) if eye_open_lst else np.zeros((n_frames, 2), dtype=np.float32)
+    eye_ball = np.stack([
+        np.asarray(e, dtype=np.float32).reshape(-1)[:6] for e in eye_ball_lst
+    ]) if eye_ball_lst else np.zeros((n_frames, 6), dtype=np.float32)
+    # A truncated registration (fewer measured frames than the artifact
+    # stores) would index out of range at render time; name it here.
+    if eye_open.shape[0] != n_frames or eye_ball.shape[0] != n_frames:
+        raise ArtifactError(
+            f"eye state has {eye_open.shape[0]}/{eye_ball.shape[0]} frames, "
+            f"artifact says {n_frames}")
+    np.savez(eye_state_path(avatar_dir),
+             eye_open=eye_open, eye_ball=eye_ball)
+    return eye_state_path(avatar_dir)
+
+
+def read_eye_state(avatar_dir: str):
+    """(eye_open [n,2], eye_ball [n,6]) float32, or (None, None) if absent.
+
+    Older artifacts predate the file; the caller then falls back to zeros,
+    exactly as before the file existed.
+    """
+    path = eye_state_path(avatar_dir)
+    if not os.path.exists(path):
+        return None, None
+    with np.load(path, allow_pickle=False) as z:
+        eye_open = np.asarray(z["eye_open"], dtype=np.float32)
+        eye_ball = np.asarray(z["eye_ball"], dtype=np.float32)
+    if eye_open.ndim != 2 or eye_open.shape[1] != 2 or eye_ball.shape != \
+            (eye_open.shape[0], 6):
+        raise ArtifactError(
+            f"{path}: eye_open {eye_open.shape} / eye_ball {eye_ball.shape} "
+            f"do not match the [n,2]/[n,6] layout")
+    return eye_open, eye_ball
 
 
 # ─── marker ────────────────────────────────────────────────────────────────

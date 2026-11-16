@@ -57,6 +57,15 @@ async def human(request):
         datainfo = {}
         if params.get('tts'):  # tts 参数透传（voice, emotion 等）
             datainfo['tts'] = params.get('tts')
+        set_emo = getattr(avatar_session, "set_emotion", None)
+        if 'emotion' in params and set_emo is not None:
+            # Per-utterance emotion: rides the audio's eventpoint to the ASR,
+            # row-tagging features so THIS sentence renders with it, and a
+            # barge-in/interrupt cannot leak it into the next one.
+            try:
+                datainfo['emotion'] = set_emo(params['emotion'])
+            except ValueError as e:
+                return json_error(str(e))
 
         if params['type'] == 'echo':
             avatar_session.put_msg_txt(params['text'], datainfo)
@@ -97,10 +106,21 @@ async def humanaudio(request):
         filebytes = fileobj.file.read()
 
         datainfo = {}
+        params = {}
+        for key in form.keys():
+            params[key] = form[key]
 
         avatar_session = get_session(request, sessionid)
         if avatar_session is None:
             return json_error("session not found")
+        if params.get('emotion'):
+            set_emo = getattr(avatar_session, "set_emotion", None)
+            try:
+                datainfo['emotion'] = (set_emo(params['emotion'])
+                                       if set_emo is not None
+                                       else params['emotion'])
+            except ValueError as e:
+                return json_error(str(e))
         avatar_session.put_audio_file(filebytes, datainfo)
         return json_ok()
     except Exception as e:
@@ -138,6 +158,32 @@ async def record(request):
         return json_ok()
     except Exception as e:
         logger.exception('record exception:')
+        return json_error(str(e))
+
+
+async def set_emotion(request):
+    """Set the avatar's emotion (ditto backend).
+
+    Accepts an emotion name ("happy", "surprise", ...), an index 0..7, a list
+    of indices (soft mix), or null to clear back to the default. For the
+    ditto backend this drives the motion model's 8-class conditioning.
+    Other backends answer `unsupported`.
+    """
+    try:
+        params = await request.json()
+        sessionid = params.get('sessionid', '')
+        avatar_session = get_session(request, sessionid)
+        if avatar_session is None:
+            return json_error("session not found")
+        if not hasattr(avatar_session, 'set_emotion'):
+            return json_error("emotion is only supported by the ditto backend")
+        try:
+            avatar_session.set_emotion(params.get('emotion'))
+        except ValueError as e:
+            return json_error(str(e))
+        return json_ok(data={"emotion": avatar_session.current_emotion()})
+    except Exception as e:
+        logger.exception('set_emotion exception:')
         return json_error(str(e))
 
 
@@ -384,6 +430,7 @@ def setup_routes(app):
     app.router.add_get("/", index)
     app.router.add_post("/human", human)
     app.router.add_post("/humanaudio", humanaudio)
+    app.router.add_post("/set_emotion", set_emotion)
     app.router.add_post("/set_audiotype", set_audiotype)
     app.router.add_post("/record", record)
     app.router.add_post("/interrupt_talk", interrupt_talk)

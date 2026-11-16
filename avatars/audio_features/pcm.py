@@ -41,6 +41,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from avatars.audio_features.base_asr import BaseASR
+from avatars.ditto.emotion import parse_emotion
 from utils.logger import logger
 
 
@@ -78,6 +79,11 @@ class PcmASR(BaseASR):
     N_VALID = N_VALID_FEATS
     FEAT_DIM = FEAT_DIM
 
+    # The window extracts 5 rows covering its first 0.2 s of content, but the
+    # window itself spans 0.405 s: a row for content t needs PCM through
+    # t+0.205. BaseASR.audio_lead_chunks consumers pace audio against this.
+    audio_lead_chunks = 10
+
     def __init__(self, opt, parent, feat_fn: FeatFn):
         super().__init__(opt, parent)
         self.feat_fn = feat_fn
@@ -85,9 +91,20 @@ class PcmASR(BaseASR):
         # Un-extracted PCM tail. Grows by `chunk` per frame, shrinks by `STRIDE`
         # per extraction; it stays >= STRIDE after the first window.
         self._pcm: NDArray[np.float32] = np.zeros((0,), dtype=np.float32)
+        # Emotion tag PER SAMPLE of _pcm, exactly parallel to it. A tag rides
+        # the audio it belongs to, so a window's emotion is decided by the
+        # audio the window actually covers — not by whichever userdata happened
+        # to be current when extraction ran (chunks can be queued far ahead of
+        # their extraction).
+        self._pcm_emo: list = []
 
         # Extracted-but-not-yet-emitted feature rows, oldest first.
         self._feat: NDArray[np.float32] = np.zeros((0, self.FEAT_DIM), dtype=np.float32)
+
+        # Per-row emotion tags, parallel to ``_feat``, inherited from the
+        # window that produced each row. ``None`` means "no tag" — the backend
+        # then uses its default.
+        self._feat_emo: list = []
 
         self._closed = False
         self._windows_done = 0
@@ -115,17 +132,29 @@ class PcmASR(BaseASR):
         return int(self._feat.shape[0])
 
     # ─── PCM in ────────────────────────────────────────────────────────────
-    def push_pcm(self, pcm: NDArray[np.float32]) -> None:
-        """Append raw 16 kHz mono PCM. Split out so tests skip the queue."""
+    def push_pcm(self, pcm: NDArray[np.float32], emo=None) -> None:
+        """Append raw 16 kHz mono PCM, tagged with the chunk's emotion.
+
+        Split out so tests skip the queue. ``emo`` is the ALREADY-parsed
+        emotion value (index / list / None) — parsing happens once, at the
+        userdata boundary.
+        """
         if pcm.size:
             self._pcm = np.concatenate(
                 [self._pcm, np.asarray(pcm, dtype=np.float32).reshape(-1)])
+            self._pcm_emo += [emo] * len(pcm)
 
     def _extract_available(self) -> int:
         """Run the extractor over every complete window; return rows produced."""
         produced = 0
         while self._pcm.shape[0] >= self.WINDOW:
             window = self._pcm[:self.WINDOW]
+            # Window emotion: the mode over the samples the window actually
+            # covers (all-NaN-safe: None-topped windows stay None). HuBERT's
+            # 0.405 s window spans ~2 chunks, so a tag covers both fully.
+            w_tags = self._pcm_emo[:self.WINDOW]
+            tagged = [t for t in w_tags if t is not None]
+            win_emo = max(set(tagged), key=tagged.count) if tagged else None
             feats = np.asarray(self.feat_fn(window), dtype=np.float32)
             # A wrong-shaped return would surface 40 frames later as a silent
             # desync, so fail at the boundary instead.
@@ -134,9 +163,11 @@ class PcmASR(BaseASR):
                     f"feat_fn returned {feats.shape}, expected "
                     f"({self.N_VALID}, {self.FEAT_DIM}) — check chunksize")
             self._feat = np.concatenate([self._feat, feats], axis=0)
+            self._feat_emo += [win_emo] * self.N_VALID
             # Advance by STRIDE, not WINDOW: the last WINDOW-STRIDE samples are
             # the overlap carried into the next window.
             self._pcm = self._pcm[self.STRIDE:]
+            del self._pcm_emo[:self.STRIDE]
             self._windows_done += 1
             produced += self.N_VALID
         return produced
@@ -153,7 +184,19 @@ class PcmASR(BaseASR):
             audio_frame = self.get_audio_frame()
             self.frames.append(audio_frame.data)
             self.output_queue.put(audio_frame)
-            self.push_pcm(audio_frame.data)
+            ud = audio_frame.userdata if isinstance(
+                audio_frame.userdata, dict) else {}
+            emo = None
+            if ud.get("emotion") is not None:
+                try:
+                    emo = parse_emotion(ud["emotion"])
+                except ValueError:
+                    logger.warning("ignoring invalid emotion tag %r",
+                                   ud["emotion"])
+            # The tag rides THIS chunk's samples; the end marker clears the
+            # tag for anything after it so one sentence's emotion cannot leak
+            # into the next.
+            self.push_pcm(audio_frame.data, emo)
 
         self._extract_available()
 
@@ -162,7 +205,8 @@ class PcmASR(BaseASR):
             batch = self._feat[:n]
             self._feat = self._feat[n:]
             self._frames_emitted += n
-            self._emit([row.copy() for row in batch])
+            self._emit([row.copy() for row in batch], self._feat_emo[:n])
+            del self._feat_emo[:n]
         else:
             # Underfed: pad with the newest row so the batch still has the
             # shape the inference loop requires, and count it. A starved batch
@@ -173,13 +217,20 @@ class PcmASR(BaseASR):
                 last = self._feat[-1]
                 pad = np.repeat(last[None, :], n - self._feat.shape[0], axis=0)
                 batch = np.concatenate([self._feat, pad], axis=0)
+                emos = list(self._feat_emo)
+                if emos:
+                    emos += [emos[-1]] * (n - len(emos))
+                else:
+                    emos = [None] * n
                 self._feat = np.zeros((0, self.FEAT_DIM), dtype=np.float32)
+                del self._feat_emo[:]
             else:
                 batch = np.zeros((n, self.FEAT_DIM), dtype=np.float32)
+                emos = [None] * n
             self._frames_emitted += n
-            self._emit([row for row in batch])
+            self._emit([row for row in batch], emos)
 
-    def _emit(self, batch: list) -> None:
+    def _emit(self, batch: list, emos: list) -> None:
         """Queue one batch WITHOUT blocking the ASR worker.
 
         ``feat_queue`` is bounded (maxsize=2) and drained by the inference
@@ -191,7 +242,7 @@ class PcmASR(BaseASR):
         dropped rather than queued forever elsewhere in this pipeline.
         """
         try:
-            self.feat_queue.put_nowait(batch)
+            self.feat_queue.put_nowait((batch, emos))
         except queue.Full:
             self.dropped_batches += 1
             try:
@@ -199,7 +250,7 @@ class PcmASR(BaseASR):
             except queue.Empty:
                 pass
             try:
-                self.feat_queue.put_nowait(batch)
+                self.feat_queue.put_nowait((batch, emos))
             except queue.Full:
                 # Consumer is mid-swap; the newer batch wins next round.
                 self.dropped_batches += 1
@@ -220,6 +271,8 @@ class PcmASR(BaseASR):
         super().flush_talk()
         self._pcm = np.zeros((0,), dtype=np.float32)
         self._feat = np.zeros((0, self.FEAT_DIM), dtype=np.float32)
+        self._pcm_emo = []
+        del self._feat_emo[:]
         try:
             while True:
                 self.feat_queue.get_nowait()

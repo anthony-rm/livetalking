@@ -121,6 +121,7 @@ POST /human
 | `type` | 是 | string | — | `echo`: 直接复读; `chat`: 触发 LLM 回答 |
 | `interrupt` | 否 | bool | false | 是否打断当前播报 |
 | `tts` | 否 | object | — | 透传给 TTS 的配置（如 `voice`, `emotion`） |
+| `emotion` | 否 | string | — | 面部表情（ditto 后端）: `angry` `disgust` `fear` `happy` `neutral` `sad` `surprise` `contempt`，或 0-7 索引，或索引数组。仅作用于本句，句末自动清空 |
 
 **响应**:
 
@@ -144,6 +145,7 @@ POST /humanaudio
 |------|------|------|------|
 | `sessionid` | 是 | string | 会话 ID |
 | `file` | 是 | file | 音频文件 |
+| `emotion` | 否 | string | 同 `/human` 的 `emotion`（ditto 后端） |
 
 **响应**:
 
@@ -152,6 +154,29 @@ POST /humanaudio
 ```
 
 ---
+
+## 4b. 设置表情 (Set Emotion)
+
+设置会话级表情（ditto 后端）。与 `/human` 的 `emotion` 参数（仅本句生效）不同，本接口持续生效直到再次调用。
+
+```
+POST /set_emotion
+```
+
+**Content-Type**: `application/json`
+
+| 参数 | 必填 | 类型 | 说明 |
+|------|------|------|------|
+| `sessionid` | 是 | string | 会话 ID |
+| `emotion` | 是 | string/int/list | 表情名或 0-7 索引；索引数组为软混合；`null` 恢复默认 |
+
+**响应**:
+
+```json
+{ "code": 0, "msg": "ok", "data": { "emotion": "happy" } }
+```
+
+非 ditto 后端返回 `emotion is only supported by the ditto backend`。
 
 ## 5. 打断播报
 

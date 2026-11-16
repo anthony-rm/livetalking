@@ -34,6 +34,7 @@ import cv2
 from avatars.base_avatar import BaseAvatar
 from avatars.audio_features.pcm import PcmASR, make_ditto_feat_fn
 from avatars.ditto import artifact as art
+from avatars.ditto import emotion as ditto_emotion
 from registry import register
 from utils.logger import logger
 from utils.device import initialize_device
@@ -246,7 +247,9 @@ def load_avatar(avatar_id: str):
     if len(M_c2o_list) != n:
         raise art.ArtifactError(
             f"M_c2o.pkl has {len(M_c2o_list)} entries, artifact says {n}")
-    return marker, frame_list, x_s_list, f_s_list, M_c2o_list
+    # (None, None) on pre-eye-state artifacts; __init__ falls back to zeros.
+    eye_open, eye_ball = art.read_eye_state(avatar_dir)
+    return marker, frame_list, x_s_list, f_s_list, M_c2o_list, eye_open, eye_ball
 
 
 @torch.no_grad()
@@ -271,7 +274,8 @@ class DittoReal(BaseAvatar):
         super().__init__(opt)
         self.parts = model
         (self.marker, self.frame_list_cycle, self.x_s_list,
-         self.f_s_list, self.M_c2o_list) = avatar
+         self.f_s_list, self.M_c2o_list,
+         eye_open, eye_ball) = avatar
         self.n_frames = len(self.frame_list_cycle)
 
         self.asr = PcmASR(opt, self, self._make_feat_fn())
@@ -279,11 +283,20 @@ class DittoReal(BaseAvatar):
 
         dkw = self.parts["default_kwargs"]
         self.ch = self.parts["cond"]
+        if eye_open is not None:
+            # Real per-frame eyelid/gaze measured at registration; the row
+            # order matches x_s_info/frame order (ConditionHandler indexes it
+            # with _mirror_index against the same global idx).
+            eye_open_lst = [eye_open[i][None] for i in range(self.n_frames)]
+            eye_ball_lst = [eye_ball[i][None] for i in range(self.n_frames)]
+        else:
+            eye_open_lst = [np.zeros((1, 2), np.float32)] * self.n_frames
+            eye_ball_lst = [np.zeros((1, 6), np.float32)] * self.n_frames
         ch_info = {
             "x_s_info_lst": self.x_s_list,
             "sc": self.x_s_list[0]["kp"].reshape(-1),
-            "eye_open_lst": [np.zeros((1, 2), np.float32)] * self.n_frames,
-            "eye_ball_lst": [np.zeros((1, 6), np.float32)] * self.n_frames,
+            "eye_open_lst": eye_open_lst,
+            "eye_ball_lst": eye_ball_lst,
         }
         self.ch.setup(ch_info, dkw["emo"], eye_f0_mode=dkw["eye_f0_mode"])
 
@@ -336,6 +349,25 @@ class DittoReal(BaseAvatar):
         # the frame's slot position implicitly.
         self._staged: "collections.deque[dict]" = collections.deque()
 
+    # ─── emotion ──────────────────────────────────────────────────────────
+    def set_emotion(self, value):
+        """Session-sticky emotion override; ``None`` clears to the cfg default.
+
+        Returns the parsed value (index / list of indices / None) so callers
+        can forward it as a per-utterance tag. Called from the HTTP route
+        thread; value may be a name (``"happy"``), an index, or a list of
+        indices (upstream averages a list into one soft target). Invalid
+        input raises ValueError, which the route surfaces.
+        """
+        parsed = ditto_emotion.parse_emotion(value)
+        # The LMDM consumer runs on the inference thread; a plain attribute
+        # write is atomic enough for one writer (HTTP) + one reader (render).
+        self._emo_override = parsed
+        return parsed
+
+    def current_emotion(self) -> str:
+        return ditto_emotion.emotion_name(self._emo_override)
+
     # ─── audio features ────────────────────────────────────────────────────
     def _make_feat_fn(self):
         _ensure_ditto_home()
@@ -345,16 +377,28 @@ class DittoReal(BaseAvatar):
             device="cuda" if device.type == "cuda" else "cpu")
 
     # ─── LMDM driving (mirrors upstream _audio2motion_worker) ───────────────
-    def _drive_lmdm(self, feats: np.ndarray) -> None:
+    def _drive_lmdm(self, feats: np.ndarray, emos: Optional[list] = None) -> None:
         seq = self.a2m.seq_frames
         v = self.a2m.valid_clip_len
         self._audio_feat = np.concatenate([self._audio_feat, feats], axis=0)
+        # Emotion tags ride in a list parallel to the feature rows, with the
+        # same append/trim lifecycle as _audio_feat (guarded identically at
+        # the trim below, so the two can never drift out of sync).
+        if emos is not None:
+            self._emo_rows = self._emo_rows + list(emos)
+        else:
+            self._emo_rows = self._emo_rows + [None] * feats.shape[0]
 
         while True:
             window = self._audio_feat[self._local_idx:self._local_idx + seq]
             if window.shape[0] < seq:
                 break                                  # wait for more rows
-            cond = self.ch(window, self._global_idx)
+            # One emotion per WINDOW, upstream's granularity: a window spans
+            # one utterance boundary at most, so take the mode (most common
+            # tag; None counts as a candidate so pure-None stays None).
+            w_emos = self._emo_rows[self._local_idx:self._local_idx + seq]
+            emo = self._window_emotion(w_emos)
+            cond = self.ch(window, self._global_idx, emo=emo)
             if torch.is_tensor(cond):
                 cond = cond.cpu().numpy()
             if cond.ndim == 2:
@@ -383,11 +427,25 @@ class DittoReal(BaseAvatar):
                 cut = L - seq * 2
                 self._audio_feat = self._audio_feat[cut:]
                 self._local_idx -= cut
+                del self._emo_rows[:cut]
             if self._res_kp_seq is not None and self._res_kp_seq.shape[1] > seq * 2:
                 cut = self._res_kp_seq.shape[1] - seq * 2
                 self._res_kp_seq = self._res_kp_seq[:, cut:]
                 if self._valid_start is not None:
                     self._valid_start -= cut
+
+    def _window_emotion(self, w_emos: list):
+        """The window's emotion: its most common tag; sticky override if none.
+
+        Upstream conditions a whole 80-row window on ONE emotion vector, so a
+        boundary window (spans a sentence end/start) is resolved as its mode
+        rather than chopped. An untagged window falls back to the session
+        override so a sticky "happy" keeps applying to untagged speech.
+        """
+        tagged = [e for e in w_emos if e is not None]
+        if tagged:
+            return max(set(tagged), key=tagged.count)
+        return self._emo_override
 
     def _neutral_xd(self):
         """A held-mouth x_d for batches that arrive before the LMDM emits."""
@@ -403,14 +461,19 @@ class DittoReal(BaseAvatar):
     def inference_batch(self, index, audiofeat_batch):
         """Return exactly self.batch_size rendered face crops (RGB->BGR done).
 
-        audiofeat_batch: list of batch_size per-frame HuBERT features.
+        audiofeat_batch: list of batch_size per-frame HuBERT features, or a
+        ``(features, emotion)`` pair when the ASR tags rows (PcmASR does);
+        older plain-list callers stay supported.
 
         With the batched TRT lanes, all batch_size frames go through ONE
         warp chain and ONE decode instead of per-frame chains — 4x fewer GPU
         round-trips per window.
         """
+        emos = None
+        if isinstance(audiofeat_batch, tuple) and len(audiofeat_batch) == 2:
+            audiofeat_batch, emos = audiofeat_batch
         feats = np.asarray(audiofeat_batch, dtype=np.float32)
-        self._drive_lmdm(feats)
+        self._drive_lmdm(feats, emos)
 
         x_s_batch, x_d_batch, f_s_batch = [], [], []
         for _ in range(self.batch_size):

@@ -198,6 +198,51 @@ def test_checksum_detects_a_modified_frame(tmp_path):
     assert art.artifact_checksum(d) != before
 
 
+# ─── eye state ─────────────────────────────────────────────────────────────
+def test_eye_state_roundtrips(tmp_path):
+    d = os.path.join(str(tmp_path), "dt")
+    os.makedirs(d, exist_ok=True)
+    art.write_eye_state(d, [np.full((1, 2), 0.5)] * 3,
+                        [np.full((1, 6), 0.2)] * 3, n_frames=3)
+    assert os.path.exists(art.eye_state_path(d))
+    eye_open, eye_ball = art.read_eye_state(d)
+    assert eye_open.shape == (3, 2)
+    assert eye_ball.shape == (3, 6)
+    assert float(eye_open[0, 0]) == pytest.approx(0.5)
+    assert float(eye_ball[2, 5]) == pytest.approx(0.2)
+
+
+def test_eye_state_absent_returns_none_pair(tmp_path):
+    d = make_avatar(tmp_path, frames=1)
+    assert art.read_eye_state(d) == (None, None)
+
+
+def test_eye_state_mismatched_frame_count_fails(tmp_path):
+    d = os.path.join(str(tmp_path), "dt")
+    os.makedirs(d, exist_ok=True)
+    with pytest.raises(art.ArtifactError, match="n_frames|frames"):
+        art.write_eye_state(d, [np.zeros((1, 2))] * 2,
+                            [np.zeros((1, 6))] * 2, n_frames=3)
+
+
+def test_eye_state_wrong_layout_fails_at_read(tmp_path):
+    d = os.path.join(str(tmp_path), "dt")
+    os.makedirs(d, exist_ok=True)
+    np.savez(art.eye_state_path(d),
+             eye_open=np.zeros((3, 5)), eye_ball=np.zeros((3, 6)))
+    with pytest.raises(art.ArtifactError):
+        art.read_eye_state(d)
+
+
+def test_empty_eye_lists_write_zero_states(tmp_path):
+    d = os.path.join(str(tmp_path), "dt")
+    os.makedirs(d, exist_ok=True)
+    art.write_eye_state(d, [], [], n_frames=2)
+    eye_open, eye_ball = art.read_eye_state(d)
+    assert eye_open.shape == (2, 2)
+    assert float(eye_open.sum()) == 0.0
+
+
 # ─── detect.py integration ────────────────────────────────────────────────
 def test_detect_recognises_a_written_artifact(tmp_path):
     """The writer and the detector must agree without a hand-built fixture."""

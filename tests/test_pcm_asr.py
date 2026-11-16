@@ -155,10 +155,11 @@ def test_run_step_emits_one_batch_and_paces_audio():
     while not asr.feat_queue.empty():
         batches.append(asr.feat_queue.get_nowait())
     assert batches, "no feature batch was emitted"
-    batch = batches[0]
+    batch, emos = batches[0]
     assert isinstance(batch, list)
     assert len(batch) == 4
     assert all(np.asarray(r).shape == (FEAT_DIM,) for r in batch)
+    assert emos == [None] * 4      # untagged stream: no emotion metadata
     # Audio must have been forwarded: 3 steps * (4*2 chunks) = 24 chunks.
     assert asr.output_queue.qsize() == 24
 
@@ -194,9 +195,10 @@ def test_starvation_pads_to_batch_size_and_is_counted():
     # Not enough audio for any window at all.
     asr.run_step()
     assert asr.starved_batches == 1
-    batch = asr.feat_queue.get()
+    batch, emos = asr.feat_queue.get()
     assert len(batch) == 8
     assert all(np.asarray(r).shape == (FEAT_DIM,) for r in batch)
+    assert emos == [None] * 8
 
 
 def test_odd_batch_size_still_slices_by_row():
@@ -251,6 +253,93 @@ def test_module_imports_without_onnxruntime():
     # The factory defers its import; nothing at module scope may touch it.
     assert "core.aux_models.hubert_stream" not in sys.modules
     assert callable(pcm_mod.make_ditto_feat_fn)
+
+
+# ─── emotion row tagging ───────────────────────────────────────────────────
+def test_run_step_tags_rows_with_userdata_emotion():
+    """An utterance's emotion must ride its features at the ROW level, so a
+    batch sliced at an arbitrary boundary carries the right value."""
+    asr, _probe = build(batch_size=5)
+    for _ in range(5):  # warm the queue with untagged silence frames? no:
+        pass            # silence frames carry {} userdata and no emotion
+
+    asr.push_pcm(np.zeros(WINDOW_SAMPLES + STRIDE_SAMPLES, dtype=np.float32))
+    # Feed a "happy" utterance: every chunk carries the tag in userdata.
+    from avatars.base_avatar import AudioFrameData
+    asr.queue.queue.clear()
+    for i in range(16):
+        asr.queue.put(AudioFrameData(
+            data=np.zeros(320, dtype=np.float32), type=0,
+            userdata={"emotion": "happy"}))
+
+    for _ in range(5):
+        asr.run_step()
+        while not asr.output_queue.empty():     # audio-clock consumer
+            asr.output_queue.get_nowait()
+
+    found_tag = False
+    while not asr.feat_queue.empty():
+        _feats, emos = asr.feat_queue.get_nowait()
+        assert len(emos) == 5
+        if any(e is not None for e in emos):
+            found_tag = True
+            assert all(e == 3 for e in emos if e is not None)
+    assert found_tag, "no row carried the emotion tag"
+
+
+def test_emotion_tag_does_not_leak_past_sentence_end():
+    """status=end closes an utterance; later silence must be untagged."""
+    from avatars.base_avatar import AudioFrameData
+    asr, _probe = build(batch_size=5)
+    asr.queue.queue.clear()
+    # happy sentence, then its end marker, then untagged audio
+    for i in range(20):
+        ud = {"emotion": "happy"}
+        if i == 19:
+            ud = {"status": "end"}
+        asr.queue.put(AudioFrameData(
+            data=np.zeros(320, dtype=np.float32), type=0, userdata=ud))
+    for i in range(20):
+        asr.queue.put(AudioFrameData(
+            data=np.zeros(320, dtype=np.float32), type=1, userdata={}))
+
+    for _ in range(8):
+        asr.run_step()
+        while not asr.output_queue.empty():     # audio-clock consumer
+            asr.output_queue.get_nowait()
+
+    saw_happy = saw_untagged = False
+    while not asr.feat_queue.empty():
+        _feats, emos = asr.feat_queue.get_nowait()
+        if any(e == 3 for e in emos):
+            saw_happy = True
+        if all(e is None for e in emos):
+            saw_untagged = True
+    assert saw_happy, "the tagged utterance never reached the features"
+    assert saw_untagged, "the emotion leaked past the sentence end"
+
+
+def test_starved_batch_emotion_emos_all_none():
+    from avatars.base_avatar import AudioFrameData
+    asr, _probe = build(batch_size=8)
+    asr.run_step()          # no audio at all -> starved, all-None emos
+    batch = asr.feat_queue.get()
+    _feats, emos = batch
+    assert emos == [None] * 8
+
+
+def test_flush_clears_emotion_state():
+    from avatars.base_avatar import AudioFrameData
+    asr, _probe = build(batch_size=5)
+    asr.queue.put(AudioFrameData(
+        data=np.zeros(320, dtype=np.float32), type=0,
+        userdata={"emotion": "happy"}))
+    asr.run_step()
+    asr._pcm_emo = [3] * 100
+    asr._feat_emo.append(3)
+    asr.flush_talk()
+    assert asr._pcm_emo == []
+    assert asr._feat_emo == []
 
 
 if __name__ == "__main__":

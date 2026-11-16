@@ -81,6 +81,11 @@ def generate_avatar(video_path: str, avatar_id: str,
     n = len(source_info["x_s_info_lst"])
     render_size_of_f_s = int(np.asarray(source_info["f_s_lst"][0]).shape[-1]) * 8  # 64->512
 
+    # registration measured real eyelid/gaze state per frame (mediapipe
+    # face_mesh); persist it — the backend conditions motion on it
+    art.write_eye_state(avatar_dir, source_info["eye_open_lst"],
+                        source_info["eye_ball_lst"], n)
+
     # ── write the artifact ──
     # cv2.imwrite never creates directories; every subdir must exist first.
     os.makedirs(os.path.join(avatar_dir, art.FULL_IMGS_DIR), exist_ok=True)
