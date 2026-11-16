@@ -25,6 +25,8 @@ import pickle
 import sys
 import time
 import collections
+import queue
+import threading
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -61,6 +63,84 @@ FEAT_DIM = 1024
 #: Sentinel returned by inference_batch for frames whose pixels are still in
 #: an async GPU->host copy. paste_back_frame resolves it via _take_staged_frame.
 _STAGED_FRAME = object()
+
+#: LT_STAGE_TRACE=1 logs per-stage batch averages (lmdm/stitch/warp/dec/stage)
+#: every 25 batches — the live-vs-offline cost attribution instrument.
+_STAGE_TRACE = os.environ.get("LT_STAGE_TRACE") == "1"
+
+
+class _LocalGpuPipeline:
+    """Two-thread pipelining for ditto's inference_batch, local-process.
+
+    Live 512 attribution (LT_STAGE_TRACE, batch of 10): lmdm 172 + stitch
+    112 ms on the CPU side vs warp 253 + decode 270 ms on the GPU side.
+    base_avatar runs them serially, so a batch costs ~810 ms. The GIL probe
+    at scratch:gil_overlap_probe.py showed a CPU-only Python thread costs
+    the GPU thread ~10%, i.e. TRT/torch release the GIL — so the two halves
+    can overlap: the GPU worker runs warp/decode/stage for batch N while
+    the inference thread lmdm+stitches batch N+1. Steady state falls to
+    the GPU half (~525 ms/batch, ~19 fps) instead of the serial sum.
+
+    Exactly ONE worker thread: batches serialize on the GPU anyway (one
+    engine pair), and a second submitter would only grow the token deque.
+    Throughput contract: submit() never blocks on compute (bounded queue of
+    1), result() blocks until that token's frames are staged.
+    """
+
+    def __init__(self, owner, batch_size, cpu_fn, gpu_fn):
+        self._owner = owner
+        self._cpu_fn = cpu_fn
+        self._gpu_fn = gpu_fn
+        self._q = queue.Queue(maxsize=1)
+        self._quit = threading.Event()
+        self._thread = threading.Thread(target=self._worker,
+                                        name="ditto-gpu", daemon=True)
+        self._thread.start()
+
+    def _worker(self):
+        while not self._quit.is_set():
+            try:
+                token, payload = self._q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                self._gpu_fn(payload)
+            except BaseException as e:  # surface at result(); keep serving
+                token[1] = e
+            finally:
+                token[2].set()
+
+    def submit(self, index, batch_size, audiofeat_batch, **kwargs):
+        """CPU half on the CALLER's thread (GIL-bound), GPU half queued.
+
+        Returns a token; result(token) blocks until the GPU half has staged
+        the batch's pixels. The one-slot queue is the backpressure: with
+        keep_in_flight=1 base_avatar holds exactly one submitted batch, so
+        at most one GPU half waits — the GPU runs batch N while the CPU
+        runs lmdm+stitch of batch N+1.
+        """
+        token = [False, None, threading.Event()]
+        payload = self._cpu_fn(index, batch_size, audiofeat_batch)
+        self._q.put((token, payload))
+        return token
+
+    def result(self, token, timeout=None):
+        """Block until submit()'s work is done; re-raise worker errors here.
+
+        On error the worker drained its OWN partial staging (see _host) so
+        the _staged ring stays aligned with emission order — a failed batch
+        resolves to None frames and _take_staged_frame is never called for
+        it, keeping later batches' slots in place.
+        """
+        if not token[2].wait(timeout or 3600):
+            raise TimeoutError("ditto gpu pipeline result timeout")
+        if token[1] is not None:
+            raise token[1]
+        return [_STAGED_FRAME] * self._owner.batch_size
+
+    def stop(self):
+        self._quit.set()
+        self._thread.join(timeout=2)
 
 
 def _ensure_ditto_home() -> None:
@@ -427,6 +507,9 @@ class DittoReal(BaseAvatar):
         self._gen_frame_idx = 0
         self._lmdm_ms = 0.0
         self._lmdm_passes = 0
+        self._stage_n = 0
+        self._t_lmdm_ms = self._t_stitch_ms = 0.0
+        self._t_warp_ms = self._t_dec_ms = self._t_stage_ms = 0.0
         self._idle_xd: Optional[dict] = None
         self._mask_cache: Optional[np.ndarray] = None
         self._emo_override = None   # session-sticky emotion (set_emotion)
@@ -441,6 +524,92 @@ class DittoReal(BaseAvatar):
         # preserved by construction: the deque is FIFO and the markers carry
         # the frame's slot position implicitly.
         self._staged: "collections.deque[dict]" = collections.deque()
+
+        # ── two-thread lane (see _LocalGpuPipeline) ─────────────────────────
+        # Only when a batched decode engine exists AND CUDA is present: the
+        # CPU fallback path shares self.warp/dec with the tests, which must
+        # stay synchronous.
+        self.infer_pipeline = None
+        if device.type == "cuda" and hasattr(self.dec, "batch"):
+            self.infer_pipeline = _LocalGpuPipeline(
+                self, self.batch_size, self._cpu_half, self._gpu_half)
+
+    def _cpu_half(self, index, batch_size, audiofeat_batch):
+        """lmdm + stitch + prep — runs on the inference thread (GIL-bound).
+
+        Returns the (x_s, x_d, f_s) batches for the GPU half; the GPU worker
+        appends its pixels to _staged before resolving this token, so
+        emission order equals _take_staged_frame's consumption order.
+        """
+        emos = None
+        if isinstance(audiofeat_batch, tuple) and len(audiofeat_batch) == 2:
+            audiofeat_batch, emos = audiofeat_batch
+        feats = np.asarray(audiofeat_batch, dtype=np.float32)
+        trace = _STAGE_TRACE
+        t_pre = time.perf_counter() if trace else 0.0
+        self._drive_lmdm(feats, emos)
+        if trace:
+            self._t_lmdm_ms += (time.perf_counter() - t_pre) * 1000
+            t_pre = time.perf_counter()
+        x_s_batch, x_d_batch, f_s_batch = [], [], []
+        for _ in range(batch_size):
+            if self._x_d_pending:
+                x_d = self._x_d_pending.pop(0)
+            else:
+                x_d = self._neutral_xd()
+            idx = _mirror(self._gen_frame_idx, self.n_frames)
+            x_s, x_d = self.stitch(self.x_s_list[idx], x_d)
+            x_s_batch.append(x_s)
+            x_d_batch.append(x_d)
+            f_s_batch.append(self.f_s_list[idx].astype(np.float32))
+            self._gen_frame_idx += 1
+        if trace:
+            self._t_stitch_ms += (time.perf_counter() - t_pre) * 1000
+            if self._stage_n % 25 == 0 and self._stage_n > 0:
+                logger.info(
+                    "[ditto] cpu: lmdm=%.1f stitch=%.1f (avg ms)",
+                    self._t_lmdm_ms / self._stage_n,
+                    self._t_stitch_ms / self._stage_n)
+        return x_s_batch, x_d_batch, f_s_batch
+
+    def _gpu_half(self, payload):
+        """warp+decode+stage for one batch — runs on the pipeline worker.
+
+        Reads only immutable-per-run state (f_s_list, warp, dec, render_edge),
+        appends to the FIFO _staged ring; order-safe against paste_back_frame.
+        """
+        with torch.no_grad():
+            x_s_batch, x_d_batch, f_s_batch = payload
+            e = self.render_edge
+            trace = _STAGE_TRACE
+            t_pre = time.perf_counter() if trace else 0.0
+            f_3d = [self.warp(f_s[None], x_s, x_d).reshape(256, e, e)
+                    for x_s, x_d, f_s in zip(x_s_batch, x_d_batch, f_s_batch)]
+            if trace:
+                self._t_warp_ms += (time.perf_counter() - t_pre) * 1000
+                t_pre = time.perf_counter()
+            imgs = self.dec(np.stack(f_3d))
+            if trace:
+                self._t_dec_ms += (time.perf_counter() - t_pre) * 1000
+                t_pre = time.perf_counter()
+            imgs = imgs.permute(0, 2, 3, 1).clamp(0, 1).mul(255) \
+                .round().to(torch.uint8)
+            # Stage BEFORE the risky boundary and never between: a failure
+            # earlier leaves _staged untouched, so emission order (and
+            # _take_staged_frame alignment) survives skipped batches.
+            self._stage_batch_gpu(imgs)
+            if trace:
+                self._t_stage_ms += (time.perf_counter() - t_pre) * 1000
+                self._stage_n += 1
+                if self._stage_n % 25 == 0:
+                    logger.info(
+                        "[ditto] batches=%d warp=%.1f dec=%.1f stage=%.1f "
+                        "(avg ms, gpu thread)", self._stage_n,
+                        self._t_warp_ms / self._stage_n,
+                        self._t_dec_ms / self._stage_n,
+                        self._t_stage_ms / self._stage_n)
+                    self._t_warp_ms = self._t_dec_ms = self._t_stage_ms = 0.0
+                    self._stage_n = 0
 
     # ─── emotion ──────────────────────────────────────────────────────────
     def set_emotion(self, value):
@@ -562,60 +731,101 @@ class DittoReal(BaseAvatar):
         warp chain and ONE decode instead of per-frame chains — 4x fewer GPU
         round-trips per window.
         """
-        emos = None
-        if isinstance(audiofeat_batch, tuple) and len(audiofeat_batch) == 2:
-            audiofeat_batch, emos = audiofeat_batch
-        feats = np.asarray(audiofeat_batch, dtype=np.float32)
-        self._drive_lmdm(feats, emos)
+        with torch.no_grad():
+            trace = _STAGE_TRACE
+            t_pre = t_lmdm = t_stitch = t_warp = t_dec = t_stage = 0.0
+            if trace:
+                t_pre = time.perf_counter()
+            emos = None
+            if isinstance(audiofeat_batch, tuple) and len(audiofeat_batch) == 2:
+                audiofeat_batch, emos = audiofeat_batch
+            feats = np.asarray(audiofeat_batch, dtype=np.float32)
+            self._drive_lmdm(feats, emos)
+            if trace:
+                t_lmdm = time.perf_counter() - t_pre
+                t_pre = time.perf_counter()
 
-        x_s_batch, x_d_batch, f_s_batch = [], [], []
-        for _ in range(self.batch_size):
-            if self._x_d_pending:
-                x_d = self._x_d_pending.pop(0)
-            else:
-                x_d = self._neutral_xd()
-            idx = _mirror(self._gen_frame_idx, self.n_frames)
-            x_s, x_d = self.stitch(self.x_s_list[idx], x_d)
-            x_s_batch.append(x_s)
-            x_d_batch.append(x_d)
-            f_s_batch.append(self.f_s_list[idx].astype(np.float32))
-            self._gen_frame_idx += 1
+            x_s_batch, x_d_batch, f_s_batch = [], [], []
+            for _ in range(self.batch_size):
+                if self._x_d_pending:
+                    x_d = self._x_d_pending.pop(0)
+                else:
+                    x_d = self._neutral_xd()
+                idx = _mirror(self._gen_frame_idx, self.n_frames)
+                x_s, x_d = self.stitch(self.x_s_list[idx], x_d)
+                x_s_batch.append(x_s)
+                x_d_batch.append(x_d)
+                f_s_batch.append(self.f_s_list[idx].astype(np.float32))
+                self._gen_frame_idx += 1
+            if trace:
+                t_stitch = time.perf_counter() - t_pre
+                t_pre = time.perf_counter()
 
-        if hasattr(self.dec, "batch"):
-            # Warp output is (C=256, D, H, W) flattened as stored: the graph's
-            # reshape is edge-dependent (E=64 -> 512 render, E=32 -> 256).
-            e = self.render_edge
-            if device.type != "cuda":
-                # No batched engine without CUDA (tests); synchronous path.
-                imgs = self.dec(np.stack(
-                    [self.warp(f_s[None], x_s, x_d).reshape(256, e, e)
-                     for x_s, x_d, f_s in
-                     zip(x_s_batch, x_d_batch, f_s_batch)]))
+            if hasattr(self.dec, "batch"):
+                # Warp output is (C=256, D, H, W) flattened as stored: the graph's
+                # reshape is edge-dependent (E=64 -> 512 render, E=32 -> 256).
+                e = self.render_edge
+                if device.type != "cuda":
+                    # No batched engine without CUDA (tests); synchronous path.
+                    imgs = self.dec(np.stack(
+                        [self.warp(f_s[None], x_s, x_d).reshape(256, e, e)
+                         for x_s, x_d, f_s in
+                         zip(x_s_batch, x_d_batch, f_s_batch)]))
+                    imgs = imgs.permute(0, 2, 3, 1).clamp(0, 1).mul(255) \
+                        .round().to(torch.uint8).cpu().numpy()
+                    return [np.ascontiguousarray(img) for img in imgs]
+                # Batched decode lane: one engine call per window. The per-frame
+                # hybrid warp feeds it (numpy in); decode returns (B,3,H,W)
+                # torch in sigmoid range. The uint8 conversion happens ON GPU and
+                # the host copy is ASYNC into pinned memory (a synchronous .cpu()
+                # stalled the inference thread ~27 ms/frame with the GPU idle).
+                # Markers flow through the batch contract; paste_back_frame pulls
+                # the pixels from the staged ring in strict emission order.
+                # (Two-thread lane: never reached — _pipeline() diverts at
+                # _submit_batch — but kept as the synchronous reference path.)
+                f_3d = [self.warp(f_s[None], x_s, x_d).reshape(256, e, e)
+                        for x_s, x_d, f_s in zip(x_s_batch, x_d_batch, f_s_batch)]
+                if trace:
+                    t_warp = time.perf_counter() - t_pre
+                    t_pre = time.perf_counter()
+                imgs = self.dec(np.stack(f_3d))
+                if trace:
+                    t_dec = time.perf_counter() - t_pre
+                    t_pre = time.perf_counter()
                 imgs = imgs.permute(0, 2, 3, 1).clamp(0, 1).mul(255) \
-                    .round().to(torch.uint8).cpu().numpy()
-                return [np.ascontiguousarray(img) for img in imgs]
-            # Batched decode lane: one engine call per window. The per-frame
-            # hybrid warp feeds it (numpy in); decode returns (B,3,H,W)
-            # torch in sigmoid range. The uint8 conversion happens ON GPU and
-            # the host copy is ASYNC into pinned memory (a synchronous .cpu()
-            # stalled the inference thread ~27 ms/frame with the GPU idle).
-            # Markers flow through the batch contract; paste_back_frame pulls
-            # the pixels from the staged ring in strict emission order.
-            f_3d = [self.warp(f_s[None], x_s, x_d).reshape(256, e, e)
-                    for x_s, x_d, f_s in zip(x_s_batch, x_d_batch, f_s_batch)]
-            imgs = self.dec(np.stack(f_3d))
-            imgs = imgs.permute(0, 2, 3, 1).clamp(0, 1).mul(255) \
-                .round().to(torch.uint8)
-            self._stage_batch_gpu(imgs)
-            return [_STAGED_FRAME] * self.batch_size
+                    .round().to(torch.uint8)
+                self._stage_batch_gpu(imgs)
+                if trace:
+                    t_stage = time.perf_counter() - t_pre
+                    self._t_lmdm_ms += t_lmdm * 1000
+                    self._t_stitch_ms += t_stitch * 1000
+                    self._t_warp_ms += t_warp * 1000
+                    self._t_dec_ms += t_dec * 1000
+                    self._t_stage_ms += t_stage * 1000
+                    self._stage_n += 1
+                    if self._stage_n % 25 == 0:
+                        logger.info(
+                            "[ditto] batches=%d lmdm=%.1f stitch=%.1f "
+                            "warp=%.1f dec=%.1f stage=%.1f (avg ms)",
+                            self._stage_n,
+                            self._t_lmdm_ms / self._stage_n,
+                            self._t_stitch_ms / self._stage_n,
+                            self._t_warp_ms / self._stage_n,
+                            self._t_dec_ms / self._stage_n,
+                            self._t_stage_ms / self._stage_n)
+                        self._t_lmdm_ms = self._t_stitch_ms = 0.0
+                        self._t_warp_ms = self._t_dec_ms = 0.0
+                        self._t_stage_ms = 0.0
+                        self._stage_n = 0
+                return [_STAGED_FRAME] * self.batch_size
 
-        out = []
-        for x_s, x_d, f_s in zip(x_s_batch, x_d_batch, f_s_batch):
-            f_3d = self.warp(f_s[None], x_s, x_d)
-            img = np.asarray(self.dec(f_3d))
-            img = np.clip(img, 0, 255).astype(np.uint8)
-            out.append(np.ascontiguousarray(img))
-        return out
+            out = []
+            for x_s, x_d, f_s in zip(x_s_batch, x_d_batch, f_s_batch):
+                f_3d = self.warp(f_s[None], x_s, x_d)
+                img = np.asarray(self.dec(f_3d))
+                img = np.clip(img, 0, 255).astype(np.uint8)
+                out.append(np.ascontiguousarray(img))
+            return out
 
     # ─── async GPU->host handoff ───────────────────────────────────────────
     def _stage_batch_gpu(self, imgs_uint8_gpu):

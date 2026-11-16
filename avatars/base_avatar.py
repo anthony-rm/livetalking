@@ -607,6 +607,11 @@ class BaseAvatar:
 
         infer_quit_event.set()
         infer_thread.join(timeout=10)
+        # Local GPU pipelines (ditto) stop with the inference thread that
+        # feeds them; the worker is daemon, so this is promptness not a leak.
+        pipeline = self._pipeline()
+        if pipeline is not None:
+            getattr(pipeline, "stop", lambda: None)()
 
         process_quit_event.set()
         process_thread.join(timeout=10)
