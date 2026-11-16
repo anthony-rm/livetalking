@@ -218,7 +218,11 @@ class HumanPlayer:
         target_w = int(getattr(self.__container.opt, "video_scale", 0) or 0)
         if target_w and frame.shape[1] != target_w:
             h, w = frame.shape[:2]
-            frame = cv2.resize(frame, (target_w, int(round(h * target_w / w))),
+            # H.264 requires even dimensions; 960 wide gives 1920*960/1080 =
+            # 1706.67 -> 1707, which libx264 rejects ('height not divisible
+            # by 2') and the video track then delivers NOTHING.
+            target_h = int(round(h * target_w / w)) // 2 * 2
+            frame = cv2.resize(frame, (target_w, target_h),
                                interpolation=cv2.INTER_AREA)
         new_frame = VideoFrame.from_ndarray(frame, format="bgr24")
         self.__video._queue.put((new_frame, None))
