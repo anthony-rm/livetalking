@@ -1,4 +1,100 @@
+# PLAN_DITTO_SESSION_7 — resume point (2026-11-16, stopped mid-sweep)
+
+## State at stop (all measured, nothing below is a guess)
+
+- Server RUNNING on the box, 256-lane auto-selected, `--video-scale 720`,
+  log `/tmp/sweep720.log`, pid from `ss -ltnp | grep 8010`. Stale-session
+  trap is live as always (`POST /api/admin/sessions/kill-all` before each
+  gate).
+- The A/V residual is CHARACTERISED, not yet fixed. New probe
+  `scratch/ditto/av_offset_series.py` (box `/tmp/av_offset_series.py`)
+  proves: **TRANSIENT, not growing** — v−a offset settles at −0.2…−0.4 s
+  within the first seconds, then oscillates in that band with −0.4 ms/s
+  trend over 90 s. So: fixed structural latency (~0.24 s mean), not a rate
+  problem. Lips lag audio by ~0.24 s.
+- Working hypothesis (NOT yet measured): the dominant term is the ASR
+  feature window's right-context — a feature row for content t needs audio
+  slightly AHEAD of t — plus TTS-burst lead variance. Verify before
+  fixing: feed the ASR a synthetic burst with known content times and
+  stamp when each feat batch is emitted vs its content time.
+- `--video-scale 960` was BROKEN and is now FIXED but UNCOMMITTED:
+  `push_video` rounded 960→960×1707 (odd height), libx264 refuses odd
+  heights **and the whole video track dies silently** — the encoder error
+  appears nowhere except deep in the log as aiortc spam
+  (`avcodec_open2(...): height not divisible by 2`) while the client plays
+  audio with zero video. Fix: `target_h // 2 * 2` in `server/webrtc.py`
+  (uncommitted). SHIPPED to box as `~/livetalking_box/server/webrtc.py`.
+- Sweep results so far (identical 35 s `av_timing_probe` runs):
+  - 720: 19.29–19.37 fps video, 49.83 fps audio (server fps log: 17.7)
+  - 960: 19.31 fps video (after the even-dimension fix)
+  - 1080: NOT YET MEASURED
+- ⚠️ The sweep numbers (19.3 fps at 720) CONTRADICT session-6's 25.0 fps
+  gate on the same box yesterday-hours-ago. Paired 720/960 runs agree
+  (19.3 both) so 960 costs nothing extra, but the 25→19.3 regression at
+  CONSTANT settings needs explanation before any 960/1080 verdict:
+  box state at the two stops differs (server was freshly restarted for
+  each; the av_timing_probe numbers may just measure differently than
+  phase1_gate — session-6's 25.0 came from phase1_gate, delivered-fps
+  lines). DO NOT conclude "720 regressed" without a like-for-like
+  phase1_gate run.
+
+## TASKS (in order)
+
+1. **Re-baseline 720 with phase1_gate** (30–40 s, `AVATAR=ditto_real_v2`),
+   same protocol as session-6, fresh kill-all + clean restart. If it lands
+   ~25 fps, the 19.3 was av_timing_probe-vs-phase1_gate methodology (the
+   probe counts include ramp-up/stall windows); if it lands ~19, hunt the
+   regression (box load? another agent's job? GPU state?) before touching
+   scale.
+2. **Finish the sweep**: 960 and 1080 phase1_gate runs under the same
+   protocol. Decision rule: pick the largest scale that holds ≥ ~22 fps
+   delivered with drops ≤ ~2× the 720 baseline. 720↔960 measured equal, so
+   default recommendation will be 960 unless 1080 surprises. Note resize
+   cost is a non-issue (2.9/4.6/0.32 ms for 720/960/1080, measured).
+3. **Commit the even-dimension fix** in `server/webrtc.py` (staged alone —
+   the file may carry sibling-agent edits; `git diff` it first). Also add
+   the regression test: a 960-wide push must produce an even-height frame.
+4. **Verify the A/V residual attribution** (probe design above; scratch
+   `feat_lat_probe.py`): synthetic burst → per-row extraction wall-time vs
+   content-time. Expected finding: extraction lags content by the window
+   right-context. If instead rows map near window start, re-think.
+5. **Fix the residual** with the measurement in hand. Leading candidate:
+   render-readiness pacing — pace audio chunk t no earlier than when the
+   batch containing frame t is rendered (content-locked, removes the
+   structural offset by construction). Risk: re-couples audio to video
+   (the thing audio-master removed); requires render headroom (36 fps
+   ceiling vs 25 fps content = margin exists). Fallback: fixed audio
+   pre-delay of ~0.24 s (cheap, leaves ±0.1 s TTS-lead jitter).
+   Measure with `av_offset_series.py` before/after; success = |v−a| mean
+   < 0.08 s and no growing trend.
+6. **Re-run the full test suite** (pinned interpreter), commit + push the
+   chosen fixes, update this file + skill §8d with the outcome.
+7. **Before resuming**: `git log`/`git status` — sibling agents were
+   actively editing the repo at stop time (README, routes, web/, pcm.py —
+   my ditto_avatar.py hunks were extracted to `/tmp/ditto_avatar_mine.py`
+   during session-6's work and committed `bb8bbd9`/`caae6fc`; `pcm.py`,
+   `ditto_avatar.py` etc. may have moved since).
+
+## Traps (carry-forward)
+
+- `pkill -f` matches its own SSH wrapper — extract pid via
+  `ss -ltnp | grep 8010` and kill that.
+- SSH that runs a long `sleep` + `curl` returns exit 124 at the end even
+  when everything worked — separate the restart and the health check.
+- Gate default AVATAR=anthony010 is a deleted avatar (503): always pass
+  `AVATAR=ditto_real_v2`.
+- `max_session: 1`: kill-all before each connect; a rejected offer shows as
+  "Rejecting offer: Maximum session limit reached".
+- The server's cumulative `dropped N` counter (per-session) reads large late
+  in a session — early-window values are the comparable ones.
+- av_timing_probe's client-side fps can differ from phase1_gate's
+  delivered-fps; compare like with like (see task 1).
+
+# PLAN_DITTO_SESSION_7 — resume point (2026-11-16, stopped mid-sweep)
+
+
 # DITTO — NEXT SESSION TASKS (resume point: end of 2026-11-13)
+
 
 ## Where things stand (verified numbers, do not re-measure)
 
