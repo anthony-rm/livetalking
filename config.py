@@ -99,6 +99,11 @@ def parse_args():
                              "every browser: H.264 needs sprop-parameter-sets in the "
                              "SDP, which aiortc does not emit, so Firefox cannot "
                              "decode it and shows a black video.")
+    parser.add_argument('--video-scale', type=int, default=0,
+                        help="downscale the encoded video to this width "
+                             "(0 = native). The encode is CPU-bound in "
+                             "aiortc; a 12 GB GPU box renders fine but "
+                             "1080p VP8/H264 encoding trails the render.")
     parser.add_argument('--stun', type=str, default='stun:stun.freeswitch.org:3478',
                         help="stun server url")
     parser.add_argument('--push_url', type=str,

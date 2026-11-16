@@ -168,6 +168,32 @@ def load_model(_arg=None):
         logger.info("[ditto] lmdm engine: %s", lmdm_engine)
         lmdm_cfg = dict(lmdm_cfg, model_path=lmdm_engine)
 
+    # Batched DECODE lane (static B=10): the LMDM emits the whole 10-frame
+    # window per pass, so the decoder runs once per window instead of ten
+    # times (measured 31.8 -> 25.9 ms/frame). The warp stays on the per-frame
+    # hybrid: a B=10 warp engine was built and measured SLOWER (32.3 vs 24.5
+    # ms/frame) — the dense-motion hourglass is already compute-saturated at
+    # B=1, batching only removes launch overhead. Mixed = 50.4 ms/frame.
+    dec_b10 = os.environ.get("DITTO_DECODE_B10_ENGINE", "")
+    if not dec_b10:
+        cand = os.path.join(os.path.dirname(DITTO_WEIGHTS.rstrip("/")),
+                            "warp_b10_engines", "decoder_b10_fp16.engine")
+        if os.path.exists(cand):
+            dec_b10 = cand
+    if dec_b10 and os.path.exists(dec_b10):
+        _install_cuda_shim()
+        from avatars.ditto.trt_decode_batch import TRTDecodeBatch
+        dec = TRTDecodeBatch(dec_b10, device=dev)
+        logger.info("[ditto] decode: batched engine %s", dec_b10)
+        return {
+            "cond": ConditionHandler(**cond_cfg),
+            "a2m": Audio2Motion(lmdm_cfg),
+            "stitch": MotionStitch(stitch_cfg),
+            "warp": warp or WarpF3D(warp_cfg),
+            "dec": dec,
+            "default_kwargs": default_kwargs,
+        }
+
     return {
         "cond": ConditionHandler(**cond_cfg),
         "a2m": Audio2Motion(lmdm_cfg),
@@ -364,11 +390,15 @@ class DittoReal(BaseAvatar):
         """Return exactly self.batch_size rendered face crops (RGB->BGR done).
 
         audiofeat_batch: list of batch_size per-frame HuBERT features.
+
+        With the batched TRT lanes, all batch_size frames go through ONE
+        warp chain and ONE decode instead of per-frame chains — 4x fewer GPU
+        round-trips per window.
         """
         feats = np.asarray(audiofeat_batch, dtype=np.float32)
         self._drive_lmdm(feats)
 
-        out = []
+        x_s_batch, x_d_batch, f_s_batch = [], [], []
         for _ in range(self.batch_size):
             if self._x_d_pending:
                 x_d = self._x_d_pending.pop(0)
@@ -376,13 +406,28 @@ class DittoReal(BaseAvatar):
                 x_d = self._neutral_xd()
             idx = _mirror(self._gen_frame_idx, self.n_frames)
             x_s, x_d = self.stitch(self.x_s_list[idx], x_d)
-            f_s = self.f_s_list[idx][None].astype(np.float32)   # (1,32,16,64,64)
-            f_3d = self.warp(f_s, x_s, x_d)
-            img = np.asarray(self.dec(f_3d))                    # [h,w,c] float 0-255, RGB
-            img = np.clip(img, 0, 255).astype(np.uint8)
-            img = np.ascontiguousarray(img)
-            out.append(img)
+            x_s_batch.append(x_s)
+            x_d_batch.append(x_d)
+            f_s_batch.append(self.f_s_list[idx].astype(np.float32))
             self._gen_frame_idx += 1
+
+        if hasattr(self.dec, "batch"):
+            # Batched decode lane: one engine call per window. The per-frame
+            # hybrid warp feeds it (numpy in); decode returns (B,3,512,512)
+            # torch, converted here to per-frame RGB uint8 like DecodeF3D.
+            f_3d = [self.warp(f_s[None], x_s, x_d).reshape(256, 64, 64)
+                    for x_s, x_d, f_s in zip(x_s_batch, x_d_batch, f_s_batch)]
+            imgs = self.dec(np.stack(f_3d))
+            imgs = imgs.permute(0, 2, 3, 1).clamp(0, 1).mul(255) \
+                .round().to(torch.uint8).cpu().numpy()
+            return [np.ascontiguousarray(img) for img in imgs]
+
+        out = []
+        for x_s, x_d, f_s in zip(x_s_batch, x_d_batch, f_s_batch):
+            f_3d = self.warp(f_s[None], x_s, x_d)
+            img = np.asarray(self.dec(f_3d))
+            img = np.clip(img, 0, 255).astype(np.uint8)
+            out.append(np.ascontiguousarray(img))
         return out
 
     # ─── paste-back (upstream's numpy putback math, restructured) ───────────

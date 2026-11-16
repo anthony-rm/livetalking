@@ -213,7 +213,13 @@ class HumanPlayer:
             self.__container.output._player = self
 
     def push_video(self, frame):
+        import cv2
         from av import VideoFrame
+        target_w = int(getattr(self.__container.opt, "video_scale", 0) or 0)
+        if target_w and frame.shape[1] != target_w:
+            h, w = frame.shape[:2]
+            frame = cv2.resize(frame, (target_w, int(round(h * target_w / w))),
+                               interpolation=cv2.INTER_AREA)
         new_frame = VideoFrame.from_ndarray(frame, format="bgr24")
         self.__video._queue.put((new_frame, None))
 
