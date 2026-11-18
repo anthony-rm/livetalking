@@ -20,6 +20,7 @@
 
 import math
 import collections
+from typing import TYPE_CHECKING
 from numpy.typing import NDArray
 import torch
 import numpy as np
@@ -58,8 +59,23 @@ class AudioFrameData:
     data: NDArray[np.float32]
     type: int = 0  # 默认值
     userdata: dict = field(default_factory=dict)
+    # Monotonic index among REAL chunks (assigned in BaseASR.put_audio_frame;
+    # -1 = synthetic silence). The pacer records the last seq it consumed
+    # (self._paced_chunk_idx) — introspection for pacing progress and for
+    # future policy work. Display policy does NOT use it (newest-frame
+    # display was chosen over a content-pointer check; see _pace_audio).
+    chunk_seq: int = -1
+
+# BaseAvatar subclasses own the feature extractor; every worker thread
+# assumes avatar.asr exists by render() time. Declared for the type checker
+# only — importing base_asr at module scope would be circular (it imports
+# BaseAvatar from THIS module).
+if TYPE_CHECKING:
+    from avatars.audio_features.base_asr import BaseASR
 
 class BaseAvatar:
+    asr: "BaseASR"
+
     def __init__(self, opt):
         self.opt = opt
         self.sample_rate = 16000
@@ -187,6 +203,19 @@ class BaseAvatar:
             self.tts.flush_talk()
         if hasattr(self, 'asr') and hasattr(self.asr, 'flush_talk'):
             self.asr.flush_talk()
+        # Barge-in: everything queued toward the audio track belongs to the
+        # interrupted sentence — the pacer must switch to the new speech
+        # (or silence) on the very next tick. The queues are purged above;
+        # this bump kills the delay-line copy of zombie speech too (drop
+        # mode keeps `lead` chunks in the line).
+        try:
+            while True:
+                self.audio_out_queue.get_nowait()
+        except queue.Empty:
+            pass
+        # Monotonic generation counter: the pacer clears its delay line the
+        # next time it observes a newer generation. One writer, one reader.
+        self._flush_generation = getattr(self, "_flush_generation", 0) + 1
 
     # def flush(self):
     #     self.flush_talk()
@@ -398,14 +427,35 @@ class BaseAvatar:
 
         The audio track's own recv() paces by wall clock and blocks in 5 ms
         increments when its queue is empty, so this thread is what keeps it
-        continuous. Real audio chunks arrive from process_frames; when the
-        queue is empty we push silence so the track never starves. That silence
-        is a real 320-sample zero chunk, not a dropped frame, so the browser's
-        jitter buffer sees a steady stream and does not stretch or conceal.
+        continuous. Real audio chunks arrive from the audio source selected
+        below; when the queue is empty we push silence so the track never
+        starves. That silence is a real 320-sample zero chunk, not a dropped
+        frame, so the browser's jitter buffer sees a steady stream and does
+        not stretch or conceal.
+
+        LT_AVSYNC=drop (default): the source is `asr.audio_tap_queue`, filled
+        at ARRIVAL rate by put_audio_frame — speech plays at real time
+        regardless of the render fps. The VIDEO path is unchanged: every
+        rendered frame is pushed and the WebRTC track's newest-frame-wins
+        decides what the browser shows. A content-pointer frame-drop was
+        considered and REJECTED by measurement: with real-time audio the play
+        pointer runs at 50 chunks/s while the renderer produces mouth content
+        at only ~28 chunks/s (14 fps x 2 chunks), so after ~1 s of speech
+        every rendered frame is already "behind" and a behind-check freezes
+        the picture; a queue-depth check was worse still (the render queue
+        holds a whole 10-frame batch — it discarded 9 of every 10 frames and
+        starved the video track). What drop mode actually costs is a lip-sync
+        LAG that grows during sustained speech and recovers in pauses; it is
+        bounded by render speed, and LT_AUDIO_LEAD is what compensates it.
+
+        LT_AVSYNC=stretch: the source is `audio_out_queue` as before — audio
+        flows per rendered frame, so speech stretches when the render is
+        slower than 25 fps (the old behavior, kept as A/B arm and fallback).
 
         Set LT_AUDIO_TRACE=1 to log the queue depth every 500 ms: a depth that
-        falls to 0 during speech means audio is produced slower than the 50 Hz
-        clock consumes it, and the silence below is being spliced into words.
+        falls to 0 during speech means the *stretch* lane produced audio
+        slower than the 50 Hz clock consumes it, and the silence below is
+        being spliced into words.
         """
         silence = np.zeros(self.asr.chunk, dtype=np.int16)
         chunk = silence
@@ -413,6 +463,10 @@ class BaseAvatar:
         period = 1.0 / 50.0
         next_tick = time.perf_counter()
         trace = os.environ.get("LT_AUDIO_TRACE") == "1"
+        drop_mode = os.environ.get("LT_AVSYNC", "drop").strip().lower() != "stretch"
+        # In drop mode the lead delay line re-aligns lips to audio the same
+        # way, applied to the tap stream (comment below describes the
+        # original reasoning, still true for both lanes).
         # Content alignment: the ASR pairs each feature batch (rows for content
         # [t, t+0.2)) with the audio chunks sitting RIGHT-CONTEXT ahead of it,
         # so raw pacing plays audio ~10 chunks (0.2 s) before the lips move
@@ -423,16 +477,50 @@ class BaseAvatar:
         # frames do — the two RTP timelines then line up.
         lead = int(os.environ.get("LT_AUDIO_LEAD",
                                   getattr(self.asr, "audio_lead_chunks", 0)) or 0)
+        # Barge-in (drop mode): flush_talk purges the tap queue, but the
+        # delay line still holds lead chunks of the interrupted sentence.
+        # Clearing this makes the pacer dump it and re-fill behind whatever
+        # comes next, so zombie speech dies within `lead` ticks, not after
+        # the whole line plays out. Plain attribute write: one writer
+        # (flush, session/request thread), one reader (this thread).
+        self._paced_chunk_idx = 0
+        self._flush_generation = getattr(self, "_flush_generation", 0)
+        _line_gen = self._flush_generation
         _next_report = next_tick + 0.5
         _dry = 0
         _pushed = 0
         # delay line holding `lead` chunks: every chunk shifts 0.2 s later in
-        # order. As a side effect the buffer smooths brief render hiccups
-        # that today splice silence into words.
+        # order. In stretch mode it smooths render hiccups; in drop mode it
+        # re-aligns the tap to the lips identically.
         delay_line = collections.deque()
         while not quit_event.is_set():
+            gen_changed = self._flush_generation != _line_gen
+            if gen_changed:
+                _line_gen = self._flush_generation
+                delay_line.clear()
             try:
-                chunk, userdata = self.audio_out_queue.get(block=True, timeout=0.01)
+                if drop_mode:
+                    frame_data = self.asr.audio_tap_queue.get(
+                        block=True, timeout=0.01)
+                    # End-of-stream markers are zero chunks from the TTS
+                    # adapters. The REAL audio for the sentence is already in
+                    # the tap; emitting this marker as audible audio would
+                    # re-play a zero - harmless - but the marker's eventpoint
+                    # must still reach the track, and in stretch mode the
+                    # SAME chunk flows through output_queue, so the tap copy
+                    # would DOUBLE it. Play it as silence with the marker.
+                    pcm_i16 = (frame_data.data * 32767).astype(np.int16)
+                    if not frame_data.data.any():
+                        pcm_i16 = silence.copy()
+                    chunk = pcm_i16
+                    userdata = frame_data.userdata
+                    # The tap carries real speech only (put_audio_frame is
+                    # the real-audio entry point); record the last seq the
+                    # pacer consumed so humans can inspect pacing progress.
+                    self._paced_chunk_idx = frame_data.chunk_seq
+                else:
+                    chunk, userdata = self.audio_out_queue.get(
+                        block=True, timeout=0.01)
                 _pushed += 1
             except queue.Empty:
                 _dry += 1
@@ -452,7 +540,9 @@ class BaseAvatar:
                 asr = getattr(self, "asr", None)
                 qfeat = asr.feat_queue.qsize() if asr is not None else -1
                 logger.info("[audio] depth=%d dry=%d real=%d qfeat=%d",
-                            self.audio_out_queue.qsize(), _dry, _pushed, qfeat)
+                            (self.asr.audio_tap_queue if drop_mode
+                             else self.audio_out_queue).qsize(),
+                            _dry, _pushed, qfeat)
                 _dry = _pushed = 0
                 _next_report = now + 0.5
             wait = next_tick - now
@@ -461,16 +551,39 @@ class BaseAvatar:
         logger.info('baseavatar audio pacing thread stop')
 
     def process_frames(self,quit_event):
-        enable_transition = True  # 渐隐过渡：说话/静音两路来自不同的图像，硬切会有跳变
+        enable_transition = True  # 渐变过渡：说话/静音两路来自不同的图像，硬切会有跳变
         _transition_duration = 0.15  # 12 fps render 下约 2 帧中间帧
         _last_silent_frame = None
         _last_speaking_frame = None
-        
         _last_speaking = False
         _transition_start = time.time()
 
         self.output.start()
-        
+
+        # LT_AVSYNC selects how the audio track is fed (the pacer's drop-mode
+        # branch reads the same env at its start). drop: speech is paced at
+        # arrival rate (real time no matter the render fps); the video path
+        # is UNCHANGED — every rendered frame is pushed and the WebRTC
+        # track's newest-frame-wins decides what the browser shows. stretch:
+        # the old behaviour — both the audio and the picture advance at
+        # render rate, speech stretches.
+        #
+        # Why no content-locked frame skip here: with real-time audio the
+        # play pointer runs at 50 chunks/s while the renderer produces mouth
+        # content at only ~28 chunks/s (14 fps x 2 chunks), so after ~1 s of
+        # speech EVERY rendered frame is already "behind" the pointer and a
+        # behind-check would freeze the picture. Worse, the render queue
+        # holds a whole 10-frame batch, so a queue-depth check drops 9 of
+        # every 10 frames (measured: video track starved entirely). The
+        # residual cost of drop mode is a lip-sync LAG that grows during
+        # sustained speech and recovers in pauses — bounded by render speed,
+        # not by a policy bug — and the audio lead (LT_AUDIO_LEAD) is what
+        # compensates it.
+        drop_mode = os.environ.get("LT_AVSYNC", "drop").strip().lower() != "stretch"
+        if drop_mode:
+            logger.info("[avsync] drop mode: speech paced at arrival rate; "
+                        "video path unchanged (track does newest-frame-wins)")
+
         while not quit_event.is_set():
             try:
                 audio_frames: list[AudioFrameData]
@@ -536,7 +649,7 @@ class BaseAvatar:
                     # dry, and enqueuing them here built a silent backlog (up to
                     # 200 chunks = 4 s) that real speech then queued behind.
                     frame = (audio_frame.data * 32767).astype(np.int16)
-                    if audio_frame.type != 1:
+                    if audio_frame.type != 1 and not drop_mode:
                         self.audio_out_queue.put((frame, audio_frame.userdata))
                     
                 # if self.opt.transport == 'virtualcam' and hasattr(self.output, '_cam') and self.output._cam:

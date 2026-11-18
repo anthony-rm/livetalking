@@ -35,11 +35,21 @@ class _Asr:
     def __init__(self, lead):
         self.audio_lead_chunks = lead
         self.feat_queue = Queue()
+        # Stretch-lane stub: these tests pin LT_AVSYNC=stretch (see
+        # _run_pacer), so the tap queue below is never read — but providing
+        # it keeps the stub shape honest if the default ever flips back.
+        self.audio_tap_queue = Queue(maxsize=10)
 
 
 def _run_pacer(lead, chunks, realtime=True, timeout=10.0):
     """Run BaseAvatar._pace_audio until `chunks` have been pushed out."""
+    import os
+
     from avatars.base_avatar import BaseAvatar
+
+    # This file exercises the STRETCH lane (audio_out_queue source); pin
+    # the env so the drop-lane default cannot read a missing tap queue.
+    os.environ["LT_AVSYNC"] = "stretch"
 
     av = object.__new__(BaseAvatar)
     av.__dict__["asr"] = _Asr(lead)

@@ -10,6 +10,7 @@ browser's jitter buffer actually depends on, not the input rate.
 """
 from __future__ import annotations
 
+import os
 import queue as _queue
 import threading
 import time
@@ -19,7 +20,13 @@ import pytest
 
 
 def _pace(stub, quit_event, out):
-    """Run _pace_audio, capturing every chunk it pushes into `out`."""
+    """Run _pace_audio, capturing every chunk it pushes into `out`.
+
+    These tests exercise the STRETCH lane (audio_out_queue source); pin the
+    env so the default drop lane (which reads asr.audio_tap_queue and does
+    not exist on these stubs) cannot make the thread die on them.
+    """
+    os.environ["LT_AVSYNC"] = "stretch"
     stub.output = _CapturingOutput(out)
     stub.asr = type("ASR", (), {"chunk": 320})()
     stub.audio_out_queue = _queue.Queue(maxsize=200)

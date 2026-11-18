@@ -61,13 +61,38 @@ class BaseASR:
         # as the safety valve for unbroken monologues.
         self.feat_queue = Queue(maxsize=30)
 
+        # LT_AVSYNC=drop lane: real audio for the pacing thread, at ARRIVAL
+        # rate. Filled by put_audio_frame (TTS/HTTP thread) so the ASR worker
+        # pays nothing. The pacer drains it at 50 Hz. Unbounded by design:
+        # each chunk is only 320 float32 samples (~1.3 KB including Python
+        # overhead), and dropping old chunks here silently loses spoken words
+        # on a long TTS burst. flush_talk clears it on barge-in; the utterance
+        # itself is finite and the pacer drains at the content rate.
+        self.audio_tap_queue: Queue[AudioFrameData] = Queue()
+
         #self.warm_up()
 
     def flush_talk(self):
         self.queue.queue.clear()
+        # Barge-in: tap contents belong to a sentence that will never be
+        # spoken; keeping them would make the pacer play zombie speech.
+        self.audio_tap_queue.queue.clear()
 
     def put_audio_frame(self,audio_chunk:NDArray[np.float32],datainfo:dict): #16khz 20ms pcm
-        self.queue.put(AudioFrameData(data=audio_chunk,type=0,userdata=datainfo))
+        frame = AudioFrameData(data=audio_chunk,type=0,userdata=datainfo)
+        # Real chunks get a monotonic seq: introspection for pacing progress
+        # (LT_AVSYNC=drop stores the last seq the pacer consumed).
+        # Synthetic frames are created directly with the -1 default and
+        # never advance it.
+        self._tap_seq = getattr(self, "_tap_seq", 0) + 1
+        frame.chunk_seq = self._tap_seq
+        self.queue.put(frame)
+        # LT_AVSYNC=drop lane: same chunk to the pacer's tap. Synthetic
+        # silence never passes through put_audio_frame (callers pass real
+        # TTS pcm), so the tap carries only speech. Eventpoints ride userdata
+        # exactly as on the main path, and a small int16 copy is not made
+        # here — the pacer converts per chunk at its own 50 Hz cadence.
+        self.audio_tap_queue.put(frame)
 
     #return frame:audio pcm; type: 0-normal speak, 1-silence; eventpoint:custom event sync with audio
     def get_audio_frame(self)->AudioFrameData:        
