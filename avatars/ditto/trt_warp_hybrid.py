@@ -34,7 +34,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-logger = logging.getLogger(__name__)
+from utils.logger import logger  # shared handler — own __name__ logger
+                                  # would not reach the server's log
 
 GS1_IN = "/dense_motion_network/GridSample_output_0"
 A_OUT_VOL = "/dense_motion_network/Reshape_3_output_0"
@@ -204,26 +205,55 @@ class TRTWarpHybrid:
     # chain's inputs are kept alive and its outputs CONSUMED (grid-sampled
     # into fresh tensors) before the next chain overwrites the engine's
     # static output buffers, so a chain never reads a later chain's data.
+    #
+    # f_s staging: feature_3d is 8.4 MB fp32 per frame; the live loop cycles
+    # a small frame pool (~75), so per-batch H2D of ~84 MB (pageable, ~2
+    # ms + cache pollution) is pure waste. prime_f_s() stages the whole
+    # pool once as fp32 device tensors; run_batch_dev then touches host
+    # memory only for the 21x3 keypoint arrays (252 B). dtype is fp32
+    # because ALL hybrid engines are fp32-I/O (a fp16 store would add a
+    # cast kernel per frame — the pool is ~630 MB at edge 64, affordable).
 
-    def run_batch(self, batches, device_out=True):
-        """batches: iterable of (feature_3d, kp_source, kp_driving) numpy.
+    _F_S_KEEPALIVE = {}  # class-level: staged pools outlive their avatar obj
 
-        Enqueues every chain on the current stream and returns the list of
-        (B, 256, E, E) device tensors (device_out=True) or numpy (False).
-        device_out=True does NOT sync: the caller consumes on the same
-        stream (decode), whose own sync is the batch's single wait point.
-        Returned tensors are fresh copies (clone/float), never the engines'
-        static output buffers."""
+    def prime_f_s(self, frames_fp32):
+        """Stage the cyclic f_s pool on device, once per avatar load.
+
+        frames_fp32: list of (32, E, E, D) fp32 numpy arrays in frame-index
+        order (the avatar's f_s_list, AFTER edge shrink). Idempotent: a
+        second call with the pool already staged is a no-op.
+        """
+        if getattr(self, "_f_s_pool", None) is not None:
+            return
+        pool = [torch.as_tensor(np.ascontiguousarray(arr[None]),
+                                dtype=torch.float32, device=self.device)
+                for arr in frames_fp32]
+        self._f_s_pool = pool
+        TRTWarpHybrid._F_S_KEEPALIVE[id(self)] = pool
+        logger.info("[ditto] f_s pool staged: %d frames, %.0f MB, edge %d",
+                    len(pool), sum(t.numel() for t in pool) * 4 / 1e6,
+                    self.feature_edge)
+
+    def run_batch_dev(self, chains, device_out=True):
+        """Device-native batch lane. chains: iterable of (frame_idx, x_s,
+        x_d); f_s comes from the staged pool (no per-batch H2D of the 8.4 MB
+        volumes). x_s/x_d are numpy (they come from the CPU half).
+
+        Enqueues every chain on the current stream; returned tensors are
+        fresh copies, never the engine's static output buffers. Decode
+        consumes on-stream, its sync is the window's one wait."""
+        pool = getattr(self, "_f_s_pool", None)
+        if pool is None:
+            raise RuntimeError("run_batch_dev called before prime_f_s()")
         outs = []
         keep = []
         with TRTWarpHybrid._lock:
-            for feature_3d, kp_source, kp_driving in batches:
-                f3d = torch.from_numpy(
-                    np.ascontiguousarray(feature_3d)).to(self.device)
+            for frame_idx, x_s, x_d in chains:
+                f3d = pool[frame_idx]
                 kps = torch.from_numpy(
-                    np.ascontiguousarray(kp_source)).to(self.device)
+                    np.ascontiguousarray(x_s)).to(self.device)
                 kpd = torch.from_numpy(
-                    np.ascontiguousarray(kp_driving)).to(self.device)
+                    np.ascontiguousarray(x_d)).to(self.device)
                 base = {"feature_3d": f3d, "kp_source": kps,
                         "kp_driving": kpd}
                 a_out = self.a.run(base, keep)
@@ -237,12 +267,9 @@ class TRTWarpHybrid:
                 c_out = self.c.run({self.gs2_out: warped,
                                     self.b_out_occ: occ}, keep)
                 out = c_out["out"]
-                # the engine's output buffer is reused by the next chain:
-                # materialise a fresh tensor NOW (stream-ordered) so the
-                # returned entries never alias each other.
                 outs.append(out.float() if out.dtype != torch.float32
                             else out.clone())
-            del keep[:]  # feeds only need to live until their kernels run
+            del keep[:]
         if device_out:
             return outs
         torch.cuda.current_stream().synchronize()

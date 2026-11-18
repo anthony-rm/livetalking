@@ -53,7 +53,13 @@ DITTO_CFG = os.environ.get(
 
 #: Online cfg (runtime kwargs — there is no PyTorch online cfg FILE). Measured
 #: 313 ms/pass for 10 frames = 31 ms/frame, inside the 400 ms/pass budget.
-ONLINE_KWARGS = dict(overlap_v2=70, sampling_timesteps=10, online_mode=True)
+#: T9: overlap_v2 / sampling_timesteps are env-overridable for A/B —
+#: DITTO_OVERLAP_V2 (default 70) widens valid_clip_len (15/20) so the fixed
+#: ~90 ms LMDM pass amortizes over more frames; DITTO_LMDM_STEPS (default 10)
+ONLINE_KWARGS = dict(
+    overlap_v2=int(os.environ.get("DITTO_OVERLAP_V2", "70")),
+    sampling_timesteps=int(os.environ.get("DITTO_LMDM_STEPS", "10")),
+    online_mode=True)
 
 #: HuBERT feature dim (PcmASR.FEAT_DIM). Ditto's own checkpoint; nothing else
 #: may substitute (§4 of the skill reference).
@@ -647,8 +653,18 @@ class DittoReal(BaseAvatar):
         # stay synchronous.
         self.infer_pipeline = None
         if device.type == "cuda" and hasattr(self.dec, "batch"):
+            if hasattr(self.warp, "prime_f_s"):
+                # T14: stage the cyclic f_s pool on device once (~630 MB at
+                # edge 64) — kills the ~84 MB/batch pageable H2D + the
+                # per-frame astype(fp32) in _cpu_half.
+                self.warp.prime_f_s(
+                    [f.astype(np.float32) for f in self.f_s_list])
             self.infer_pipeline = _LocalGpuPipeline(
                 self, self.batch_size, self._cpu_half, self._gpu_half)
+
+    def _warp_pool_staged(self):
+        return getattr(self.warp, "_f_s_pool", None) is not None \
+            and hasattr(self.warp, "run_batch_dev")
 
     def _cpu_half(self, index, batch_size, audiofeat_batch):
         """lmdm + stitch + prep — runs on the inference thread (GIL-bound).
@@ -677,7 +693,8 @@ class DittoReal(BaseAvatar):
             x_s, x_d = self.stitch(self.x_s_list[idx], x_d)
             x_s_batch.append(x_s)
             x_d_batch.append(x_d)
-            f_s_batch.append(self.f_s_list[idx].astype(np.float32))
+            f_s_batch.append(idx if self._warp_pool_staged()
+                              else self.f_s_list[idx].astype(np.float32))
             self._gen_frame_idx += 1
         if trace:
             self._t_stitch_ms += (time.perf_counter() - t_pre) * 1000
@@ -699,12 +716,11 @@ class DittoReal(BaseAvatar):
             e = self.render_edge
             trace = _STAGE_TRACE
             t_pre = time.perf_counter() if trace else 0.0
-            if hasattr(self.warp, "run_batch"):
-                # device-resident lane: one enqueue for the whole window, no
-                # per-chain sync/D2H — decode consumes the device tensors on
-                # the same stream (its own sync is the batch's one wait).
-                f_3d = self.warp.run_batch(
-                    [(f_s[None], x_s, x_d) for x_s, x_d, f_s
+            if self._warp_pool_staged():
+                # T14: f_s comes from the device pool by frame index — no
+                # 8.4 MB H2D per chain, no numpy astype on this thread.
+                f_3d = self.warp.run_batch_dev(
+                    [(f_s, x_s, x_d) for x_s, x_d, f_s
                      in zip(x_s_batch, x_d_batch, f_s_batch)])
                 f_3d = torch.stack(f_3d).reshape(-1, 256, e, e)
             else:
