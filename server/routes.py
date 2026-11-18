@@ -307,6 +307,19 @@ async def admin_sessions(request):
                     "transport": getattr(s_opt, "transport", ""),
                     "batch_size": getattr(s_opt, "batch_size", 0),
                 })
+            # Lip-sync counters (drop mode): _paced_chunk_idx is how many
+            # real chunks the track has played (set by _pace_audio), and each
+            # rendered mouth-frame covers 2 chunks, so lag_chunks =
+            # played_chunks - 2*rendered_frames is the mouth-vs-audio offset
+            # in the server's own currency. Exposed here so the lag can be
+            # measured from the client side instead of guessed.
+            played = getattr(avatar_session, "_paced_chunk_idx", None)
+            if played is not None:
+                s_data["paced_chunk_idx"] = played
+                s_data["rendered_frames"] = getattr(avatar_session,
+                                                    "_gen_frame_idx", -1)
+                s_data["xd_pending"] = len(getattr(avatar_session,
+                                                   "_x_d_pending", []))
             sessions_info.append(s_data)
         return json_ok(data={"sessions": sessions_info})
     except Exception as e:

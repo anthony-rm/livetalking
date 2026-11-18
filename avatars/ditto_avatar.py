@@ -21,6 +21,10 @@
 from __future__ import annotations
 
 import os
+
+_EMO_TRACE = os.environ.get("LT_EMO_TRACE") == "1"
+_XD_TRACE = os.environ.get("LT_XD_TRACE") == "1"
+_XD_TARGET_ADJUST = float(os.environ.get("LT_XD_TARGET_ADJUST", "0"))
 import pickle
 import sys
 import time
@@ -620,13 +624,36 @@ class DittoReal(BaseAvatar):
         # latches d0 without waiting for 3.2 s of speech (upstream seeds zeros
         # in front of the audio for the same reason).
         self._audio_feat = np.zeros((self.a2m.seq_frames, FEAT_DIM), np.float32)
-        self._emo_rows: List = []   # per-row emotion tags, parallel to _audio_feat
+        # Same seed length as _audio_feat: the zero rows are silence, so they
+        # carry no tag. Starting _emo_rows empty shifted every tag 80 rows
+        # (3.2 s) ahead of the window that read it — _window_emotion was
+        # resolving windows against the NEXT sentence's emotion.
+        self._emo_rows: List = [None] * self.a2m.seq_frames
         self._local_idx = 0        # window start inside _audio_feat
         self._global_idx = 0       # absolute feature-frame counter (cond idx)
         self._res_kp_seq = None    # fused LMDM output
         self._valid_start = None   # first un-emitted frame in _res_kp_seq
         self._x_d_pending: List[dict] = []
         self._gen_frame_idx = 0
+        # Bounded pending queue: in drop mode the LMDM emits motion at the
+        # FEATURE arrival rate (25 rows/s, one per 40 ms of audio) while the
+        # renderer consumes at the render rate (~18 fps). A FIFO that is never
+        # trimmed grows ~7 frames/s during sustained speech, and the picture
+        # ends up showing motion for audio the track played seconds earlier —
+        # the "lips don't track, huge latency" report. Trim oldest here: their
+        # audio already left the track, so rendering them is pure lag. The
+        # newest entries correspond to the audio being heard NOW.
+        self._xd_queue_max = int(os.environ.get("LT_XD_QUEUE_MAX", "20"))
+        # Absolute feature-row counter for the NEXT emitted x_d entry. Each
+        # feature row covers 2 audio chunks (40 ms), so entry i emitted from a
+        # pass starting at _emit_row covers chunk ~2*(_emit_row + i) minus the
+        # ASR right-context lead. Tagging entries lets _cpu_half pick the one
+        # whose audio is being played NOW instead of FIFO — that is the only
+        # lip-sync fix that works when the render rate is below the audio
+        # rate, and it is what the earlier frame-level drop got wrong (it
+        # compared rendered frames against a pointer advancing faster than
+        # the renderer and dropped everything -> freeze).
+        self._emit_row = 0
         self._lmdm_ms = 0.0
         self._lmdm_passes = 0
         self._stage_n = 0
@@ -635,6 +662,9 @@ class DittoReal(BaseAvatar):
         self._idle_xd: Optional[dict] = None
         self._mask_cache: Optional[np.ndarray] = None
         self._emo_override = None   # session-sticky emotion (set_emotion)
+        self._last_emo = None     # for the [emo] trace log
+        self._emo_trace_n = 0     # throttle: log the first N tagged windows
+        self._xd_trace_n = 0      # throttle for the [xd] pick trace
         # bbox + crop-matrix per (frame idx, render size), so paste-back never
         # re-derives the warped-mask bounds; 75 frames -> ~75 tiny tuples.
         self._paste_geom_cache: dict = {}
@@ -685,10 +715,7 @@ class DittoReal(BaseAvatar):
             t_pre = time.perf_counter()
         x_s_batch, x_d_batch, f_s_batch = [], [], []
         for _ in range(batch_size):
-            if self._x_d_pending:
-                x_d = self._x_d_pending.pop(0)
-            else:
-                x_d = self._neutral_xd()
+            x_d = self._pick_xd()
             idx = _mirror(self._gen_frame_idx, self.n_frames)
             x_s, x_d = self.stitch(self.x_s_list[idx], x_d)
             x_s_batch.append(x_s)
@@ -819,8 +846,17 @@ class DittoReal(BaseAvatar):
             else:
                 new = self.a2m.cvt_fmt(
                     self._res_kp_seq[:, self._valid_start:self._valid_start + v])
+                for i, xd in enumerate(new):
+                    xd["_row"] = self._emit_row + i
                 self._x_d_pending.extend(new)
+                self._emit_row += v
                 self._valid_start += v
+                # Drop the oldest entries whose audio has already been played
+                # (see _xd_queue_max). Kept newest-first, so the renderer shows
+                # motion for the audio being heard NOW instead of a backlog.
+                if len(self._x_d_pending) > self._xd_queue_max:
+                    del self._x_d_pending[
+                        :len(self._x_d_pending) - self._xd_queue_max]
 
             self._local_idx += v
             self._global_idx += v
@@ -848,7 +884,14 @@ class DittoReal(BaseAvatar):
         """
         tagged = [e for e in w_emos if e is not None]
         if tagged:
-            return max(set(tagged), key=tagged.count)
+            emo = max(set(tagged), key=tagged.count)
+            if _EMO_TRACE and (self._emo_trace_n or emo != self._last_emo):
+                logger.info("[emo] window %d rows=%d tag=%s -> %s",
+                            self._global_idx, len(w_emos),
+                            ditto_emotion.emotion_name(emo),
+                            ditto_emotion.emotion_name(self._emo_override))
+                self._last_emo = emo
+            return emo
         return self._emo_override
 
     def _neutral_xd(self):
@@ -859,6 +902,52 @@ class DittoReal(BaseAvatar):
             else:
                 self._idle_xd = {k: v.copy() for k, v in self.x_s_list[0].items()}
         return self._idle_xd
+
+    def _pick_xd(self):
+        """The motion frame to render for THIS batch, by content pointer.
+
+        In drop mode the audio track plays at 50 chunks/s while the renderer
+        emits at ~18 fps, so a FIFO consumer always renders motion for audio
+        that has already left the track — the measured 1.6 s lag. Each x_d
+        entry is tagged with the feature row it came from (1 row = 2 chunks
+        = 40 ms of audio), so the entry whose audio is being played NOW is
+        the one whose row index is closest to played_chunks/2. Picking it
+        instead of the oldest keeps the lips on the audio actually being
+        heard; the entries behind it are discarded (their audio is gone).
+        Returns the chosen entry with "_row" popped: MotionStitch rebuilds
+        the dict, so the tag would be lost by the caller anyway; the caller
+        re-reads this queue for the next pick instead.
+        """
+        if not self._x_d_pending:
+            return self._neutral_xd()
+        played = getattr(self, "_paced_chunk_idx", 0)
+        # Each row covers 2 chunks; the ASR's right-context means the emitted
+        # row lags the chunk it describes by audio_lead_chunks, so the row
+        # describing the chunk currently being played is the one nearest
+        # (played - lead) / 2.
+        lead = getattr(self.asr, "audio_lead_chunks", 0)
+        # LT_XD_TARGET_ADJUST shifts the pick target in rows: >0 picks newer
+        # motion (lips ahead), <0 older (lips behind). Calibrate with the lag
+        # probe (inspect_lag.py) if a residue remains.
+        target = (played - lead) / 2.0 + _XD_TARGET_ADJUST
+        # nearest entry by row index; ties go to the newer one (higher row)
+        best, best_d = 0, None
+        for i, xd in enumerate(self._x_d_pending):
+            row = xd["_row"]
+            d = abs(row - target)
+            if best_d is None or d < best_d:
+                best, best_d = i, d
+        chosen = self._x_d_pending.pop(best)
+        # everything strictly before the chosen entry is stale audio; drop
+        chosen_row = chosen.pop("_row", None)
+        del self._x_d_pending[:best]
+        if _XD_TRACE and self._xd_trace_n < 80:
+            self._xd_trace_n += 1
+            logger.info("[xd] played=%d lead=%d target=%.1f row=%d "
+                        "ahead=%d behind=%d",
+                        played, lead, target, chosen_row,
+                        len(self._x_d_pending), best)
+        return chosen
 
     # ─── batch contract ────────────────────────────────────────────────────
     @torch.no_grad()
