@@ -253,6 +253,23 @@ def load_model(_arg=None):
         raise ValueError(f"DITTO_RENDER_SIZE must be auto, 256 or 512, "
                          f"got {render_size}")
     hybrid_dir = os.environ.get("DITTO_WARP_ENGINE_DIR", "")
+    dec_b10_override = os.environ.get("DITTO_DECODE_B10_ENGINE", "")
+    # INT8 lane: opt-in via DITTO_INT8=1. Engines live in warp_int8_engines/
+    # (entropy-calibrated, FP32 I/O — drop-in for the wrappers). Auto-detect
+    # both engines; fail loudly if only one exists (mixed lanes are
+    # untested numerics).
+    if os.environ.get("DITTO_INT8", "").strip().lower() in ("1", "true", "yes"):
+        int8_dir = os.path.join(cfg_base, "warp_int8_engines")
+        warp_ok = os.path.exists(os.path.join(int8_dir, "hyb_segB.engine"))
+        dec_engine = os.path.join(int8_dir, "decoder_b10_int8.engine")
+        if not (warp_ok and os.path.exists(dec_engine)):
+            raise RuntimeError(
+                f"DITTO_INT8=1 but the int8 engine set is incomplete in "
+                f"{int8_dir} (warp segs: {warp_ok}, decoder: "
+                f"{os.path.exists(dec_engine)}) — run build_int8.py")
+        hybrid_dir = int8_dir
+        dec_b10_override = dec_engine
+        logger.info("[ditto] INT8 lane: %s", int8_dir)
     if not hybrid_dir and render_size == 256:
         cand = os.path.join(cfg_base, "warp_r256_engines")
         if os.path.exists(os.path.join(cand, "hyb_segB.engine")):
@@ -299,6 +316,8 @@ def load_model(_arg=None):
     # ms/frame) — the dense-motion hourglass is already compute-saturated at
     # B=1, batching only removes launch overhead. Mixed = 50.4 ms/frame.
     dec_b10 = os.environ.get("DITTO_DECODE_B10_ENGINE", "")
+    if dec_b10_override:
+        dec_b10 = dec_b10_override
     if not dec_b10 and render_size == 256:
         cand = os.path.join(cfg_base, "warp_r256_engines",
                             "decoder_b10_r256_fp16.engine")
