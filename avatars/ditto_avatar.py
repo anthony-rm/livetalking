@@ -68,6 +68,96 @@ _STAGED_FRAME = object()
 #: every 25 batches — the live-vs-offline cost attribution instrument.
 _STAGE_TRACE = os.environ.get("LT_STAGE_TRACE") == "1"
 
+#: Give the TRT LMDM engine its own CUDA stream (see _enable_lmdm_async_stream).
+#: 0 = off (blocking infer, current behaviour), 1 = on (async, concurrent with
+#: the renderer). Measured gain target: 14.0 -> 16.5-17.5 fps at 512.
+_LMDM_ASYNC = os.environ.get("LT_LMDM_ASYNC", "1") not in ("0", "false", "no")
+
+
+def _enable_lmdm_async_stream(a2m) -> bool:
+    """Give the TRT LMDM engine its own CUDA stream and use the async path.
+
+    WHY THIS IS THE REAL LEVER (measured on the box, 2026-11-18):
+    TRTWrapper.infer() ends with a BLOCKING cudaDeviceToHost copy of pred_noise
+    and x_start — and that blocking copy synchronises the WHOLE default
+    stream. The GPU worker runs warp+decode on the same default stream, so
+    every LMDM step stalls for the entire renderer's queued work. That is why
+    the live lane reports lmdm=172 ms/batch while the same pass measured
+    ISOLATED is 90 ms (2x inflation), and why the live batch (695 ms) exceeds
+    the sum of the isolated parts (90 + 550 = 640 ms) by ~55 ms.
+
+    TRTWrapper.infer_async(stream) already exists upstream — same kernels,
+    async H2D + execute_async_v3 + async D2H on the given stream. Switching
+    the LMDM to it on a PRIVATE stream makes its 90 ms of kernels overlap with
+    the renderer's 550 ms instead of serialising behind them.
+
+    Output is bit-identical: the sync below waits only for the LMDM's own
+    stream, and the inference thread reads the same buffer it would have
+    read from the blocking path. No numerics change, no GIL change.
+    """
+    if not _LMDM_ASYNC:
+        return False
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return False
+    # Object chain: Audio2Motion.lmdm -> LMDM.model -> TRTWrapper.
+    lmdm = getattr(a2m, "lmdm", None)
+    wrapper = getattr(lmdm, "model", None)
+    if lmdm is None or wrapper is None \
+            or not hasattr(wrapper, "infer_async"):
+        return False
+    a2m._lmdm_stream = torch.cuda.Stream(device=device)
+    a2m._lmdm_async = True
+    logger.info("[ditto] LMDM private stream on (per-step waits scoped to "
+                "it; the renderer keeps the default stream)")
+    return True
+
+
+def _patch_lmdm_call_np(a2m) -> None:
+    """Swap the LMDM's per-step engine call to the async path on its private
+    stream, and scope each wait to that stream alone.
+
+    Upstream's _one_step (tensorrt branch):
+        model.setup({...})                  # cudaFree+cudaMalloc per call
+        model.infer()                       # BLOCKING copies on the NULL stream
+    Two hidden serialization sources: (1) blocking cudaMemcpy is issued on
+    the legacy NULL stream, which every torch-created stream synchronises
+    with — so each step's D2H waits for the renderer's whole queued backlog;
+    (2) setup()'s cudaFree/cudaMalloc pair is an implicit device-wide sync.
+
+    Replacement, per DDIM step:
+      prime once  : full setup() with the first real arrays — allocates the
+                    device buffers, binds addresses, latches shapes (all
+                    constant for the run).
+      then        : refresh the four HOST input arrays in place (same
+                    pointers are re-read at copy time; no free/malloc, no
+                    rebind), infer_async(private stream), synchronize THAT
+                    stream only, read pred_noise/x_start.
+    The DDIM recurrence itself (upstream's _call_np) is untouched: the
+    sync per step is unavoidable — the host update consumes each step's
+    output — but it no longer drags the renderer's stream with it.
+    """
+    stream = a2m._lmdm_stream
+    lmdm = a2m.lmdm
+    wrapper = lmdm.model
+    primed = [False]
+
+    def _one_step_async(x, cond_frame, cond, time_cond):
+        if not primed[0]:
+            wrapper.setup({"x": x, "cond_frame": cond_frame,
+                           "cond": cond, "time_cond": time_cond})
+            primed[0] = True
+        else:
+            for name, data in (("x", x), ("cond_frame", cond_frame),
+                               ("cond", cond), ("time_cond", time_cond)):
+                wrapper.buffer[name][0] = np.ascontiguousarray(data)
+        wrapper.infer_async(stream.cuda_stream)
+        stream.synchronize()
+        return wrapper.buffer["pred_noise"][0], wrapper.buffer["x_start"][0]
+
+    lmdm._one_step = _one_step_async
+    logger.info("[ditto] LMDM engine call: infer_async, sync scoped to the "
+                "private stream")
+
 
 class _LocalGpuPipeline:
     """Two-thread pipelining for ditto's inference_batch, local-process.
@@ -477,6 +567,13 @@ class DittoReal(BaseAvatar):
                        v_min_max_for_clip=dkw["v_min_max_for_clip"],
                        smo_k_d=dkw["smo_k_d"],
                        **ONLINE_KWARGS)
+
+        # ── LMDM async stream (see _enable_lmdm_async_stream) ─────────────
+        # Must run AFTER setup() (setup binds the engine context; the stream
+        # is per-engine, not per-context, so it can be created here).
+        _enable_lmdm_async_stream(self.a2m)
+        if getattr(self.a2m, "_lmdm_async", False):
+            _patch_lmdm_call_np(self.a2m)
 
         self.stitch = self.parts["stitch"]
         self.stitch.setup(
