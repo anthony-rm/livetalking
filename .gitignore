@@ -40,5 +40,8 @@ venv/
 PLAN.md
 tasks/
 
+# Thesis / research materials (private academic work, never commit)
+/thesis/
+
 # Notebook / editor scratch
 .ipynb_checkpoints/
