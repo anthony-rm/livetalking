@@ -699,12 +699,22 @@ class DittoReal(BaseAvatar):
             e = self.render_edge
             trace = _STAGE_TRACE
             t_pre = time.perf_counter() if trace else 0.0
-            f_3d = [self.warp(f_s[None], x_s, x_d).reshape(256, e, e)
-                    for x_s, x_d, f_s in zip(x_s_batch, x_d_batch, f_s_batch)]
+            if hasattr(self.warp, "run_batch"):
+                # device-resident lane: one enqueue for the whole window, no
+                # per-chain sync/D2H — decode consumes the device tensors on
+                # the same stream (its own sync is the batch's one wait).
+                f_3d = self.warp.run_batch(
+                    [(f_s[None], x_s, x_d) for x_s, x_d, f_s
+                     in zip(x_s_batch, x_d_batch, f_s_batch)])
+                f_3d = torch.stack(f_3d).reshape(-1, 256, e, e)
+            else:
+                f_3d = [self.warp(f_s[None], x_s, x_d).reshape(256, e, e)
+                        for x_s, x_d, f_s in zip(x_s_batch, x_d_batch, f_s_batch)]
+                f_3d = np.stack(f_3d)
             if trace:
                 self._t_warp_ms += (time.perf_counter() - t_pre) * 1000
                 t_pre = time.perf_counter()
-            imgs = self.dec(np.stack(f_3d))
+            imgs = self.dec(f_3d)
             if trace:
                 self._t_dec_ms += (time.perf_counter() - t_pre) * 1000
                 t_pre = time.perf_counter()

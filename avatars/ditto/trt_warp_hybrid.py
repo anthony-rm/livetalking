@@ -86,8 +86,10 @@ class _Engine:
             self.outputs.append((nm, buf))
         self._keep = []
 
-    def run(self, feeds):
-        self._keep = list(feeds.values())
+    def run(self, feeds, keep_out=None):
+        keep = keep_out if keep_out is not None else self._keep
+        if keep_out is None:
+            keep[:] = list(feeds.values())
         for nm, t in feeds.items():
             # TRT does NOT validate tensor sizes against the engine's static
             # shapes — a wrong-sized buffer is read as far as the engine
@@ -99,7 +101,7 @@ class _Engine:
                 raise ValueError(
                     f"engine input {nm} wants {want}, got {tuple(t.shape)}")
             t = t.to(self.in_dt[nm]).contiguous()
-            self._keep.append(t)
+            keep.append(t)
             self.ctx.set_tensor_address(nm, t.data_ptr())
         stream = torch.cuda.current_stream()
         self.ctx.execute_async_v3(stream_handle=stream.cuda_stream)
@@ -188,3 +190,60 @@ class TRTWarpHybrid:
             c_out = self.c.run({self.gs2_out: warped, self.b_out_occ: occ})
             torch.cuda.current_stream().synchronize()
             return c_out["out"].clone().cpu().numpy()
+
+    # ── device-resident batch lane ────────────────────────────────────────
+    # The live GPU half runs the 10-frame window as 10 independent warp
+    # chains. The sync/D2H above is per-chain — 10 pipeline drains per batch,
+    # and decode then copies the result back to the device. The batch lane
+    # removes exactly that: all 10 chains enqueue back-to-back on the SAME
+    # stream (kernel order alone makes the shared engine output buffers
+    # safe), ONE sync before decode, zero host round-trips.
+    #
+    # Numerics: identical kernels, identical order, identical inputs — the
+    # only difference is WHEN the host waits. Buffer-reuse hazard: each
+    # chain's inputs are kept alive and its outputs CONSUMED (grid-sampled
+    # into fresh tensors) before the next chain overwrites the engine's
+    # static output buffers, so a chain never reads a later chain's data.
+
+    def run_batch(self, batches, device_out=True):
+        """batches: iterable of (feature_3d, kp_source, kp_driving) numpy.
+
+        Enqueues every chain on the current stream and returns the list of
+        (B, 256, E, E) device tensors (device_out=True) or numpy (False).
+        device_out=True does NOT sync: the caller consumes on the same
+        stream (decode), whose own sync is the batch's single wait point.
+        Returned tensors are fresh copies (clone/float), never the engines'
+        static output buffers."""
+        outs = []
+        keep = []
+        with TRTWarpHybrid._lock:
+            for feature_3d, kp_source, kp_driving in batches:
+                f3d = torch.from_numpy(
+                    np.ascontiguousarray(feature_3d)).to(self.device)
+                kps = torch.from_numpy(
+                    np.ascontiguousarray(kp_source)).to(self.device)
+                kpd = torch.from_numpy(
+                    np.ascontiguousarray(kp_driving)).to(self.device)
+                base = {"feature_3d": f3d, "kp_source": kps,
+                        "kp_driving": kpd}
+                a_out = self.a.run(base, keep)
+                gs1 = self._grid_sample(
+                    a_out[self.a_out_vol], a_out[self.a_out_grid])
+                b_feeds = dict(base)
+                b_feeds[self.gs1_in] = gs1
+                b_out = self.b.run(b_feeds, keep)
+                occ = b_out[self.b_out_occ]
+                warped = self._grid_sample(f3d, b_out[self.b_out_deform])
+                c_out = self.c.run({self.gs2_out: warped,
+                                    self.b_out_occ: occ}, keep)
+                out = c_out["out"]
+                # the engine's output buffer is reused by the next chain:
+                # materialise a fresh tensor NOW (stream-ordered) so the
+                # returned entries never alias each other.
+                outs.append(out.float() if out.dtype != torch.float32
+                            else out.clone())
+            del keep[:]  # feeds only need to live until their kernels run
+        if device_out:
+            return outs
+        torch.cuda.current_stream().synchronize()
+        return [t.cpu().numpy() for t in outs]
