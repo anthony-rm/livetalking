@@ -1,3 +1,104 @@
+# PLAN_DITTO_SESSION_9 — resume point (2026-11-18, "512 lane permanent")
+
+## OUTCOME (all measured this session)
+
+- **512 lane is now the serving config.** User decision: no more 256. Switched
+  via `DITTO_RENDER_SIZE=512` and **baked into the box's restart.sh**
+  (`export DITTO_RENDER_SIZE=512` before `exec run.sh`) — survives reboots.
+  Server live at 960p/h264, `ditto_real_v2`, status ready.
+- **Emotion tests green on HEAD**: `test_pcm_asr.py` + `test_ditto_emotion.py`
+  = 32/32 passed (pinned interpreter), including
+  `test_emotion_tag_does_not_leak_past_sentence_end` — the session-6/8 failing
+  test. d93db1's per-utterance rework fixed it. The meeting's "emotion control
+  issue" is resolved at the row-tagging level; what remains is vocabulary
+  (more emotions), not a bug.
+- **960p + 512² gate measured** (phase1_gate, 45 s, real avatar, all three
+  TRT lanes + two-thread pipeline):
+
+  | window | final fps | dropped |
+  |---|---|---|
+  | warm-up | 10.7 | 2 |
+  | 1-4 (steady) | 14.0 / 13.9 / 13.9 / 13.8 | 2 each (~0.15%) |
+
+  GPU during speech: 89% util, 61.7 C, 5.2 GiB. Exactly at the two-thread
+  lane's predicted ceiling (lmdm 172 + warp 253 + decode 270 ms/batch ~ 14.3
+  fps). Delivery path clean. Client counter prints ~50 — aiortc audio-track
+  50 Hz clock artifact, not video fps.
+
+- **Accepted trade, on record**: 14 fps < 25 fps content rate, so sustained
+  speech stretches (session-4 structural finding — no buffering fix; the
+  render must exceed 25 fps for real-time speech). Short conversational
+  replies fine; long monologues drag. Mid-demo fallback: one-line
+  `DITTO_RENDER_SIZE=auto` (or `=256`) + restart.
+- **Phase 5 (motion-only browser render) evaluated for the user's own
+  machine**: Apple M2, 10-core GPU, 16 GB. ~1/3-1/4 of the 3060's throughput
+  even before the WebGL/WebGPU-vs-TRT efficiency gap (~2-4x). Scaled from
+  measured box numbers: est. 2.5-7 fps at 512², 8-16 fps at 256² — a browser
+  port on the M2 would land BELOW current delivered fps. Phase 5's wins are
+  bandwidth (252 B/frame vs 1 Mb/s) and many-viewer serving, not fps. Verdict:
+  not worth building for the seminar; only revisit if remote viewers become
+  a real requirement AND viewers have discrete GPUs.
+
+## Traps hit this session (new)
+
+- **Box restart.sh must be invoked with LT_PYTHON set**: box run.sh hardcodes
+  `/opt/miniconda3/...` but the env is `$HOME/miniconda3/...`. A restart
+  without `LT_PYTHON` kills the old server, then run.sh dies with
+  "interpreter not found" leaving the port dead. Correct invocation:
+  `env LT_PYTHON=$HOME/miniconda3/envs/livetalking/bin/python ./restart.sh
+  <args>` (DITTO_RENDER_SIZE now comes from restart.sh itself).
+- The conda error spam ("An unexpected error has occurred... conda 26.7.1")
+  on every SSH command is Mac-side shell noise; ignore it, the commands
+  themselves run fine.
+
+## 512-lane fps research (session 9 — online/paper survey; verdicts, do not re-litigate)
+
+- **Dynamic-batch warp: DEAD by existing evidence.** The static B=10 warp
+  engines already measured SLOWER than B=1 (32.3 vs 24.5 ms/frame, session 5):
+  the dense-motion chain is compute-saturated at this spatial size, so batch
+  shape is not the variable. Dyn shapes change nothing. The empty
+  `warp_hybrid_dyn_engines/` dir on the box is this idea's grave.
+- **INT8 warp+decode engines: worth ONE bounded experiment.** Expected gain
+  ~1.5-1.7x on the conv chains (TRT implicit INT8 + entropy calibration; the
+  hybrid split conveniently puts all convs in segA/B/C and the decoder —
+  the torch grid samples between segs don't quantize but are only ~3-6
+  ms/frame). LMDM stays fp16 (INT8 diffusion = fragile, and it is only
+  17.2 ms/frame). Projected chain: ~69.5 -> ~55-58 ms/frame ≈ 17-18 fps
+  ceiling, i.e. +3-4 fps. **Never reaches 25.** Quality gate: PSNR vs fp16
+  ≥ 40 dB on 50 real frames + eyeball check (face-melt precedent).
+- **Cross-project calibration (the load-bearing finding):** FLP runs this
+  exact tail (warp+SPADE 512², all-TRT fp16, CUDA paste-back) at 30+ fps on
+  an RTX 3090 single-frame incl. pre/post — scaled to the 3060 (~2.6-2.8x
+  slower) that is ~11-12 fps. We deliver 14. **We are at/above the published
+  state of the art for this renderer family on this silicon.** Upstream
+  Ditto ships no INT8 lane either (pytorch + TRT 8.6 fp16 only).
+- **Systems that DO hit real-time at 512² get it from the renderer family,
+  not from TRT precision:** VASA-1 (arXiv 2404.10667) claims 40 fps 512²
+  online via a displacement-map + efficient decoder design (hardware not
+  stated in accessible text); GAGAvatar (NeurIPS 2024, arXiv 2410.07971)
+  removes warp+decode entirely — 3D Gaussian splatting, 67 fps on an A100 in
+  naive PyTorch (~4x 3060 bandwidth → ~15-17 fps class here), but its
+  Gaussians ARE the avatar: no ditto motion space, new registration, not a
+  tail swap. Renderer-family change = research project, out of seminar scope.
+- Consequence fork, on record: on a 3060, 512²+25fps is not reachable in the
+  LivePortrait-family architecture. The only proven real-time config was
+  256² (36 fps ceiling). Choose per demo: 512²@14 (sharpest) with stretched
+  long monologues, or =256 for LectureMode-style long speech, or INT8 +3-4
+  fps at 512² if the gate passes.
+
+## Open (updated)
+
+- **INT8 engines experiment** (the one worthwhile fps lever at 512²; see
+  research section above) — build segA/B/C + decoder INT8 with entropy
+  calibration, PSNR ≥ 40 dB gate, then measure delivered fps.
+- lead=15 centering if lips still lag by eye in the browser (lead=10 shipped;
+  residual ~+0.2 s, measured linear response).
+- Image-only avatar registration (`is_image_flag` path) — untouched.
+- Séminaire prep — untouched.
+
+
+---
+
 # PLAN_DITTO_SESSION_8 — resume point (2026-11-16, session-7 tasks DONE)
 
 ## OUTCOME (all measured this session)
