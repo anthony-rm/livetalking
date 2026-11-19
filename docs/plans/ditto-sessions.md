@@ -47,9 +47,15 @@
   "interpreter not found" leaving the port dead. Correct invocation:
   `env LT_PYTHON=$HOME/miniconda3/envs/livetalking/bin/python ./restart.sh
   <args>` (DITTO_RENDER_SIZE now comes from restart.sh itself).
-- The conda error spam ("An unexpected error has occurred... conda 26.7.1")
-  on every SSH command is Mac-side shell noise; ignore it, the commands
-  themselves run fine.
+- The conda error spam ("An unexpected error has occurred... conda 26.7.1") on
+  every SSH command is Mac-side shell noise; ignore it, the commands themselves
+  run fine. It comes from the INVOKING shell's `conda activate` hook
+  (`CONDA_PREFIX` unset while scanning `deactivate.d`, so `os.path.join`
+  raises `TypeError`) — `run.sh` never calls conda, it only sets `PY`. It is
+  printed before restart.sh's own output, so anything watching a restart log
+  for the word "Error" fires a false alarm on every launch: match on
+  `start http server` or poll `/api/model/status` instead. `CONDA_NO_PLUGINS=true`
+  or `--no-plugins` silences it.
 
 ## 512-lane fps research (session 9 — online/paper survey; verdicts, do not re-litigate)
 
