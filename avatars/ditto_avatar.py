@@ -27,6 +27,7 @@ _XD_TRACE = os.environ.get("LT_XD_TRACE") == "1"
 _XD_TARGET_ADJUST = float(os.environ.get("LT_XD_TARGET_ADJUST", "0"))
 import pickle
 import sys
+import math
 import time
 import collections
 import queue
@@ -82,6 +83,16 @@ _STAGE_TRACE = os.environ.get("LT_STAGE_TRACE") == "1"
 #: 0 = off (blocking infer, current behaviour), 1 = on (async, concurrent with
 #: the renderer). Measured gain target: 14.0 -> 16.5-17.5 fps at 512.
 _LMDM_ASYNC = os.environ.get("LT_LMDM_ASYNC", "1") not in ("0", "false", "no")
+
+#: Idle lane for SINGLE-IMAGE artifacts (see DittoReal.idle_frame). A still
+#: image replays as a frozen photograph, so the silent branch renders a
+#: synthesized breathing loop instead. `LT_IDLE_MOTION=0` restores the still.
+_IDLE_MOTION = os.environ.get("LT_IDLE_MOTION", "1") not in ("0", "false", "no")
+#: Displayed frames per RENDERED idle frame. Idle needs no 25 fps: a breath
+#: read at ~6 fps looks the same and costs a quarter of the GPU.
+_IDLE_REUSE = max(1, int(os.environ.get("LT_IDLE_REUSE", "4")))
+#: Rendered frames in one idle loop (period of the breathing sinusoid).
+_IDLE_LOOP = max(2, int(os.environ.get("LT_IDLE_LOOP", "48")))
 
 
 def _enable_lmdm_async_stream(a2m) -> bool:
@@ -169,6 +180,21 @@ def _patch_lmdm_call_np(a2m) -> None:
                 "private stream")
 
 
+class _GpuJob:
+    """A closure to run ON the GPU worker thread (not a batch of frames).
+
+    Needed because the engines and the batched decoder hold static IO buffers:
+    a second thread calling warp/decode concurrently would corrupt them. Idle
+    frame rendering therefore rides the one existing GPU thread instead of
+    taking a lock the speech lane would have to share.
+    """
+
+    __slots__ = ("fn",)
+
+    def __init__(self, fn):
+        self.fn = fn
+
+
 class _LocalGpuPipeline:
     """Two-thread pipelining for ditto's inference_batch, local-process.
 
@@ -204,7 +230,10 @@ class _LocalGpuPipeline:
             except queue.Empty:
                 continue
             try:
-                self._gpu_fn(payload)
+                if isinstance(payload, _GpuJob):
+                    payload.fn()
+                else:
+                    self._gpu_fn(payload)
             except BaseException as e:  # surface at result(); keep serving
                 token[1] = e
             finally:
@@ -222,6 +251,23 @@ class _LocalGpuPipeline:
         token = [False, None, threading.Event()]
         payload = self._cpu_fn(index, batch_size, audiofeat_batch)
         self._q.put((token, payload))
+        return token
+
+    def run_on_gpu(self, fn, timeout=30.0):
+        """Run `fn` on the GPU worker thread and wait for it.
+
+        Used by the idle lane (ditto's `idle_frame`), which renders a crop
+        outside the batch contract. Serialising through the ONE worker keeps
+        the engines' static buffers single-owner; the wait is why the idle
+        path caches its result instead of rendering per displayed frame.
+        Errors re-raise here, on the caller's thread.
+        """
+        token = [False, None, threading.Event()]
+        self._q.put((token, _GpuJob(fn)))
+        if not token[2].wait(timeout):
+            raise TimeoutError("ditto gpu job timeout")
+        if token[1] is not None:
+            raise token[1]
         return token
 
     def result(self, token, timeout=None):
@@ -662,6 +708,8 @@ class DittoReal(BaseAvatar):
         self._idle_xd: Optional[dict] = None
         self._mask_cache: Optional[np.ndarray] = None
         self._emo_override = None   # session-sticky emotion (set_emotion)
+        self._idle_tick = 0       # idle-lane frame counter (see idle_frame)
+        self._idle_cache: Dict[int, np.ndarray] = {}   # rendered idle crops
         self._last_emo = None     # for the [emo] trace log
         self._emo_trace_n = 0     # throttle: log the first N tagged windows
         self._xd_trace_n = 0      # throttle for the [xd] pick trace
@@ -903,6 +951,126 @@ class DittoReal(BaseAvatar):
                 self._idle_xd = {k: v.copy() for k, v in self.x_s_list[0].items()}
         return self._idle_xd
 
+    # ─── idle lane: give a still image something to do ─────────────────────
+    # A single-image artifact has ONE cyclic frame, so the silent branch's
+    # `frame_list_cycle[idx]` is a frozen photograph — a dead giveaway. The
+    # LMDM cannot produce idle motion here: its state (kp_cond, res_kp_seq,
+    # clip_idx, fuse window) belongs to the speech lane and a concurrent pass
+    # would corrupt the next utterance. Instead the motion is synthesized
+    # directly in x_d space — the same dict MotionStitch consumes as the
+    # driving signal — and rendered through warp+decode.
+    #
+    # Cost model: each idle frame is rendered ONCE and cached, so a full loop
+    # costs _IDLE_LOOP renders in total (~50 at 512², a few seconds) and then
+    # idle playback is pure CPU. `_IDLE_REUSE` sets how many displayed frames
+    # each rendered frame covers, i.e. the idle frame rate.
+    #
+    # exp and kp are left at the source value: they are 63-dim expression /
+    # keypoint offsets whose geometry this lane does not own, and inventing
+    # values there renders as face-melt rather than as life.
+
+    def _idle_motion(self, i: int) -> dict:
+        """One idle x_d: the source pose plus a breathing sway.
+
+        `i` is the idle loop index; every term is periodic in `_IDLE_LOOP`, so
+        the cached loop repeats without a seam.
+        """
+        x_d = {k: np.array(v, dtype=np.float32, copy=True)
+               for k, v in self.x_s_list[0].items()}
+        ph = 2.0 * math.pi * (i % _IDLE_LOOP) / float(_IDLE_LOOP)
+        # Amplitudes are in the motion space's own units (normalized pose).
+        # Small on purpose: enough to read as breathing at 512², small enough
+        # that a still head never looks like it is nodding off.
+        sway = math.sin(ph)
+        drift = math.sin(2.0 * ph)
+        for key, amp in (("yaw", 0.010), ("pitch", 0.006),
+                         ("roll", 0.004), ("t", 0.004)):
+            v = x_d.get(key)
+            if v is None or v.size == 0:
+                continue
+            flat = v.reshape(-1).copy()
+            flat[0] += amp * sway
+            if key == "t" and flat.size > 1:
+                flat[1] += 0.5 * amp * drift
+            x_d[key] = flat.reshape(v.shape)
+        sc = x_d.get("scale")
+        if sc is not None and sc.size:
+            # scale is stored as value-1 in this space: a breath nudges it a
+            # hair at the swing extremes.
+            x_d["scale"] = (sc + 0.0015 * drift).astype(np.float32)
+        return x_d
+
+    def _render_idle(self, i: int) -> Optional[np.ndarray]:
+        """warp+decode ONE idle frame -> BGR crop, on the GPU worker thread.
+
+        Returns None when no GPU lane is available (CPU-only, or a decode
+        object without the batched engine): the caller then keeps the frozen
+        source frame, i.e. exactly the old behaviour.
+        """
+        idx = 0
+        try:
+            x_s, x_d = self.stitch(self.x_s_list[idx], self._idle_motion(i))
+        except Exception:
+            logger.exception("[ditto] idle stitch failed")
+            return None
+        e = self.render_edge
+
+        def job():
+            with torch.no_grad():
+                if self._warp_pool_staged():
+                    f_3d = self.warp.run_batch_dev([(idx, x_s, x_d)])
+                    f_3d = torch.stack(f_3d).reshape(-1, 256, e, e)
+                else:
+                    f_3d = np.stack([
+                        self.warp(self.f_s_list[idx][None], x_s, x_d)
+                        .reshape(256, e, e)])
+                imgs = self.dec(f_3d)
+                imgs = imgs.permute(0, 2, 3, 1).clamp(0, 1).mul(255) \
+                    .round().to(torch.uint8)
+                return imgs[0].cpu().numpy()
+
+        try:
+            pipeline = self._pipeline()
+            if pipeline is not None:
+                out = {}
+                pipeline.run_on_gpu(lambda: out.__setitem__("img", job()))
+                img = out.get("img")
+            else:
+                img = job()
+        except Exception:
+            logger.exception("[ditto] idle render failed; keeping the still frame")
+            return None
+        if img is None:
+            return None
+        # The decoder returns RGB; artifact frames are BGR, and paste_back
+        # converts an RGB render itself — so hand it RGB and let it convert.
+        return np.ascontiguousarray(img)
+
+    def idle_frame(self, idx: int):
+        """Rendered idle crop while silent, or None to keep the still frame.
+
+        Only image artifacts take this lane: a video artifact's own clip IS
+        its idle. Frames are rendered once each, in loop order, and cached;
+        after one full loop idle playback costs no GPU at all.
+        """
+        if not _IDLE_MOTION or self.n_frames != 1:
+            return None
+        tick = self._idle_tick
+        self._idle_tick += 1
+        slot = tick // _IDLE_REUSE
+        i = slot % _IDLE_LOOP
+        crop = self._idle_cache.get(i)
+        if crop is None:
+            crop = self._render_idle(i)
+            if crop is None:
+                return None
+            self._idle_cache[i] = crop
+        try:
+            return self.paste_back_frame(crop, 0)
+        except Exception:
+            logger.exception("[ditto] idle paste-back failed")
+            return None
+
     def _pick_xd(self):
         """The motion frame to render for THIS batch, by content pointer.
 
@@ -919,6 +1087,10 @@ class DittoReal(BaseAvatar):
         re-reads this queue for the next pick instead.
         """
         if not self._x_d_pending:
+            # Starved: the queue ran dry before the batch was filled. Counted
+            # so the health log can report it instead of the mouth silently
+            # showing the neutral (registration) pose.
+            self._neutral_picks = getattr(self, "_neutral_picks", 0) + 1
             return self._neutral_xd()
         played = getattr(self, "_paced_chunk_idx", 0)
         # Each row covers 2 chunks; the ASR's right-context means the emitted
@@ -930,23 +1102,34 @@ class DittoReal(BaseAvatar):
         # motion (lips ahead), <0 older (lips behind). Calibrate with the lag
         # probe (inspect_lag.py) if a residue remains.
         target = (played - lead) / 2.0 + _XD_TARGET_ADJUST
-        # nearest entry by row index; ties go to the newer one (higher row)
-        best, best_d = 0, None
-        for i, xd in enumerate(self._x_d_pending):
-            row = xd["_row"]
-            d = abs(row - target)
-            if best_d is None or d < best_d:
-                best, best_d = i, d
-        chosen = self._x_d_pending.pop(best)
-        # everything strictly before the chosen entry is stale audio; drop
+
+        # Re-anchor ONLY when the content pointer has advanced since the last
+        # pick. The picker is called batch_size times per batch from one tight
+        # loop while `played` does not move, and every one of those calls was
+        # re-resolving the same target: the first call dropped the stale
+        # prefix (best+1 rows for one frame) and the rest took one row each,
+        # so a batch consumed ~11 rows while the LMDM emits 10. The queue
+        # starved by ~1 row per batch and that frame fell through to the
+        # neutral pose — visibly the registration face, mid-sentence
+        # (measured: 141 of 160 speaking frames neutral).
+        if getattr(self, "_xd_anchor_played", None) != played:
+            self._xd_anchor_played = played
+            best, best_d = 0, None
+            for i, xd in enumerate(self._x_d_pending):
+                d = abs(xd["_row"] - target)
+                if best_d is None or d < best_d:
+                    best, best_d = i, d
+            # Strictly older rows describe audio that has already played.
+            del self._x_d_pending[:best]
+        # Within a batch the pointer stands still, so consecutive frames take
+        # consecutive motion rows — the same ordering upstream emits them in.
+        chosen = self._x_d_pending.pop(0)
         chosen_row = chosen.pop("_row", None)
-        del self._x_d_pending[:best]
         if _XD_TRACE and self._xd_trace_n < 80:
             self._xd_trace_n += 1
-            logger.info("[xd] played=%d lead=%d target=%.1f row=%d "
-                        "ahead=%d behind=%d",
+            logger.info("[xd] played=%d lead=%d target=%.1f row=%d ahead=%d",
                         played, lead, target, chosen_row,
-                        len(self._x_d_pending), best)
+                        len(self._x_d_pending))
         return chosen
 
     # ─── batch contract ────────────────────────────────────────────────────

@@ -248,6 +248,21 @@ class BaseAvatar:
         if hasattr(self, 'frame_list_cycle'):
             return len(self.frame_list_cycle)
         return 1
+
+    def idle_frame(self, idx: int):
+        """The frame to show while nothing is being spoken.
+
+        Default: the cyclic source frame — what every backend has always done,
+        and the only sane answer for a video avatar (its idle IS the clip).
+        A backend whose source is a SINGLE image has nothing to replay, so it
+        overrides this to return a rendered idle frame (see ditto's
+        breathing lane). Returning None means "nothing to show yet"; the
+        caller falls back to the source frame.
+        """
+        frames = getattr(self, 'frame_list_cycle', None)
+        if not frames:
+            return None
+        return frames[idx]
         
     def _pipeline(self):
         """The optional batch pipeline, or None.
@@ -601,7 +616,9 @@ class BaseAvatar:
 
                 if audio_frames[0].type!=0 and audio_frames[1].type!=0: #全为静音数据，只需要取fullimg
                     self.speaking = False
-                    target_frame = self.frame_list_cycle[idx]
+                    target_frame = self.idle_frame(idx)
+                    if target_frame is None:
+                        target_frame = getattr(self, 'frame_list_cycle')[idx]
 
                     if enable_transition:
                         # 说话→静音过渡

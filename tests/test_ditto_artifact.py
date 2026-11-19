@@ -243,6 +243,44 @@ def test_empty_eye_lists_write_zero_states(tmp_path):
     assert float(eye_open.sum()) == 0.0
 
 
+# ─── single-image (one-frame) artifacts ───────────────────────────────────
+def test_single_frame_artifact_validates(tmp_path):
+    """An image-only avatar is a ONE-frame artifact, not a special format.
+
+    Registration of a still image goes through the same writer with n=1, and
+    the backend switches to image mode on `frame_count == 1`
+    (`DittoReal.__init__` passes is_image_flag=(self.n_frames == 1)). The
+    validator's per-frame loops must therefore accept n=1 without a special
+    case; a reader that assumed "video" would reject every image avatar.
+    """
+    d = make_avatar(tmp_path, frames=1)
+    marker = art.validate(d)
+    assert marker["frame_count"] == 1
+    assert os.path.exists(art.f_s_path(d, 0))
+    assert os.path.exists(art.x_s_path(d, 0))
+    assert os.path.exists(art.full_img_path(d, 0))
+    # index 1 does NOT exist — nothing may iterate past frame_count
+    assert not os.path.exists(art.f_s_path(d, 1))
+
+
+def test_single_frame_artifact_is_detected_as_ditto(tmp_path):
+    """The mirror-cycle in the backend collapses to frame 0; detection must
+    still name the backend from the marker alone."""
+    from avatars import detect
+    make_avatar(tmp_path, "img", frames=1)
+    backend, reason = detect.detect_backend("img", root=str(tmp_path))
+    assert backend == "ditto"
+    assert "ditto.json" in reason
+
+
+def test_single_frame_artifact_reports_a_missing_frame(tmp_path):
+    """n=1 must not weaken truncation checks: a missing frame 0 is fatal."""
+    d = make_avatar(tmp_path, frames=1)
+    os.remove(art.f_s_path(d, 0))
+    with pytest.raises(art.ArtifactError, match="first missing index 0"):
+        art.validate(d)
+
+
 # ─── detect.py integration ────────────────────────────────────────────────
 def test_detect_recognises_a_written_artifact(tmp_path):
     """The writer and the detector must agree without a hand-built fixture."""
