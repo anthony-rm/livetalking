@@ -162,6 +162,12 @@ async def create_avatar_task(request):
     """
     POST /api/avatar/task
     Parameters: model, avatar_id, video_file (upload), video_path (local), ...
+
+    The source may be a VIDEO OR A SINGLE IMAGE: ditto registers a still frame
+    through the same `AvatarRegistrar.register` path and emits a one-frame
+    artifact, which its backend drives in image mode (`is_image_flag`). No
+    extension check here — the generator decides, and rejecting a path the
+    registrar can read would be a false negative.
     """
     try:
         if request.content_type == 'multipart/form-data':
@@ -202,7 +208,7 @@ async def create_avatar_task(request):
             return json_error(f"model must be one of {list(AVATAR_GENERATORS)}")
 
         if 'video_path' not in params:
-            return json_error("video_file or video_path is required")
+            return json_error("video_file, image_file or video_path is required")
 
         data_path = './data/avatars'
 

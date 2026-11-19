@@ -123,6 +123,31 @@ async def set_emotion(request):
         return json_error(str(e))
 
 
+async def emotions(request):
+    """GET /api/emotions — the vocabulary and this session's current value.
+
+    The UI renders its select and its buttons from this list, so the label
+    order lives in exactly one place (`avatars/ditto/emotion.py`, which mirrors
+    upstream's `_get_emo_avg`). A backend without emotion support reports
+    `supported: false` and the UI disables its controls instead of failing on
+    the first click.
+    """
+    try:
+        from avatars.ditto.emotion import EMOTIONS
+        data = {"emotions": list(EMOTIONS), "default": "neutral",
+                "supported": False, "current": None}
+        sessionid = request.query.get('sessionid', '')
+        avatar_session = get_session(request, sessionid) if sessionid else None
+        if avatar_session is not None and hasattr(avatar_session, 'set_emotion'):
+            data["supported"] = True
+            current = getattr(avatar_session, 'current_emotion', None)
+            data["current"] = current() if callable(current) else None
+        return json_ok(data=data)
+    except Exception as e:
+        logger.exception('emotions exception:')
+        return json_error(str(e))
+
+
 async def humanaudio(request):
     """上传音频文件"""
     try:
@@ -408,6 +433,7 @@ def setup_routes(app):
     app.router.add_post("/human", human)
     app.router.add_post("/humanaudio", humanaudio)
     app.router.add_post("/set_emotion", set_emotion)
+    app.router.add_get("/api/emotions", emotions)
     app.router.add_post("/interrupt_talk", interrupt_talk)
     app.router.add_post("/is_speaking", is_speaking)
     app.router.add_get("/api/admin/config", admin_config)

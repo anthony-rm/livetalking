@@ -176,6 +176,30 @@ POST /set_emotion
 
 非 ditto 后端返回 `emotion is only supported by the ditto backend`。
 
+## 4c. 表情词表 (Emotion vocabulary)
+
+返回 ditto 的表情标签表，以及指定会话当前生效的表情。页面用这一份列表渲染下拉框和视频下方的按钮，标签顺序只在 `avatars/ditto/emotion.py` 维护一处。
+
+```
+GET /api/emotions?sessionid=<sid>
+```
+
+**响应**:
+
+```json
+{
+  "code": 0, "msg": "ok",
+  "data": {
+    "emotions": ["angry","disgust","fear","happy","neutral","sad","surprise","contempt"],
+    "default": "neutral",
+    "supported": true,
+    "current": "happy"
+  }
+}
+```
+
+`sessionid` 可省略；不带会话或后端不支持表情时 `supported` 为 `false`、`current` 为 `null`，页面据此禁用按钮而不是等第一次点击才报错。
+
 ## 5. 打断播报
 
 立即清空当前会话的音频队列。
