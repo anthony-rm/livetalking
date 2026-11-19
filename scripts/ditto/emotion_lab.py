@@ -120,13 +120,19 @@ def render_motion(stitch, warp, dec, x_s_lst, f_s_lst, n, render_edge,
     return out
 
 
-#: Channel layout of the 265-dim motion vector (upstream `_cvt_LP_motion_info`,
-#: kp dropped). Emotion is measured to live almost entirely in the POSE groups:
-#: on the box, |label - neutral| averaged yaw 0.084 / roll 0.042 / pitch 0.038
-#: against exp 0.0016. So "exaggerate the emotion" means "exaggerate the pose
-#: delta", and touching `exp` would invent a smile the model never offered.
+#: Channel layout of the motion vector (upstream `_cvt_LP_motion_info`, kp
+#: dropped). Emotion is measured to live almost entirely in the POSE groups: on
+#: the box |label - neutral| averaged yaw 0.084 / roll 0.042 / pitch 0.038
+#: against exp 0.0016, so "stronger emotion" means "stronger pose delta" and
+#: editing `exp` would invent a face the model never offered.
 MOTION_GROUPS = (("scale", 1), ("pitch", 66), ("yaw", 66), ("roll", 66),
                  ("t", 3), ("exp", 63))
+
+#: Pose channels in the motion vector: [1, 202) = pitch|yaw|roll|t.
+#: Derived from the layout, NOT from `s_kp_cond`'s width — the real
+#: `s_kp_cond` is 265-wide (the whole vector), so using its width would
+#: sweep `exp` into the span and deform the face.
+POSE_SLICE = slice(1, 202)
 
 
 def _motion_spans():
@@ -145,12 +151,19 @@ def _arr2dic(vec):
     return dic
 
 
-def exaggerate_pose(motion, neutral, gain, groups=("pitch", "yaw", "roll", "t")):
-    """Amplify the label's pose deviation from neutral, leaving `exp` alone.
+def exaggerate_pose(motion, neutral, gain,
+                    groups=("pitch", "yaw", "roll", "t")):
+    """Amplify the label's pose deviation from a reference, leaving `exp` alone.
 
-    `gain` 1 returns `motion` untouched. The delta is added back to NEUTRAL, so
-    the result is always a pose the model could plausibly have produced — this
-    is a stronger reading of the same label, not a new one.
+    `gain` 1 returns `motion` untouched. The delta is added back to the
+    reference, so the result is always a pose reachable from it: a stronger
+    reading of the same label, not a new one.
+
+    The reference does not have to be a neutral RENDER. Scaling a linear delta
+    grows it by exactly `gain` whether the origin is a neutral motion pass or
+    the avatar's own source pose, and the source pose (`a2m.s_kp_cond`) is free
+    — which is what makes this affordable on the serving path, where a second
+    LMDM pass per window is not.
     """
     if gain == 1.0 or neutral is None:
         return motion

@@ -270,6 +270,29 @@ class _LocalGpuPipeline:
             raise token[1]
         return token
 
+    def try_run_on_gpu(self, fn) -> bool:
+        """Queue `fn` on the GPU worker if it is FREE; never wait.
+
+        The idle lane uses this. `run_on_gpu` blocks until the job has run,
+        and during speech that job sits behind a speech batch: measured
+        364 ms with one batch queued, 737 ms with two. process_frames is the
+        only producer of video, so a blocking idle render is a hole in the
+        picture for exactly as long as the speech batch takes — the reported
+        "one talking image per second, blinking with the idle image".
+
+        Declining when the queue is non-empty keeps idle work from delaying a
+        speech submit (the queue holds one payload; a speech batch waiting
+        there is real work, an idle crop is decoration).
+        """
+        if not self._q.empty():
+            return False
+        token = [False, None, threading.Event()]
+        try:
+            self._q.put_nowait((token, _GpuJob(fn)))
+        except queue.Full:
+            return False
+        return True
+
     def result(self, token, timeout=None):
         """Block until submit()'s work is done; re-raise worker errors here.
 
@@ -909,8 +932,9 @@ class DittoReal(BaseAvatar):
                 self._valid_start = self._res_kp_seq.shape[1] - self.a2m.fuse_length
                 self.stitch.d0 = self.a2m.cvt_fmt(self._res_kp_seq[0:1])[0]
             else:
-                new = self.a2m.cvt_fmt(
-                    self._res_kp_seq[:, self._valid_start:self._valid_start + v])
+                raw = self._res_kp_seq[:, self._valid_start:self._valid_start + v]
+                raw = self._exaggerate(raw)
+                new = self.a2m.cvt_fmt(raw)
                 for i, xd in enumerate(new):
                     xd["_row"] = self._emit_row + i
                 self._x_d_pending.extend(new)
@@ -979,6 +1003,46 @@ class DittoReal(BaseAvatar):
                            "using upstream vector", gain, chosen)
             self._emo_gain = 1.0
             return chosen
+
+    def _pose_span(self):
+        """Indices of the pose channels in the motion vector: ``[1, 202)``.
+
+        Motion layout is ``scale(1) | pitch(66) | yaw(66) | roll(66) | t(3) |
+        exp(63)``, so pose starts after `scale` and ends before `exp`.
+
+        Deliberately NOT derived from `s_kp_cond`'s width: that array is 265
+        wide on the real model (the whole vector), so a width-derived span
+        would sweep `exp` in and deform the face. The layout is fixed, so the
+        slice is too.
+        """
+        return (1, 202)
+
+    def _exaggerate(self, raw: np.ndarray) -> np.ndarray:
+        """Amplify the pose part of this window's motion, if a gain is set.
+
+        The reference is the avatar's own source pose (`a2m.s_kp_cond`), not a
+        neutral render: scaling a linear delta grows it by exactly the gain
+        either way, and the source pose is already on hand. A neutral render
+        would need a second LMDM pass per window, doubling the motion-model
+        cost to change how one frame looks.
+
+        Only `pitch/yaw/roll/t` move. `exp` is left at the model's value
+        because Ditto's emotion signal is essentially pose (measured: yaw 0.084
+        vs exp 0.0016), and extrapolating expression channels renders as
+        face-melt rather than as feeling.
+        """
+        gain = getattr(self, "_emo_gain", 1.0)
+        if gain == 1.0:
+            return raw
+        span = self._pose_span()
+        src = getattr(self.a2m, "s_kp_cond", None)
+        if span is None or src is None:
+            return raw
+        s, e = span
+        ref = np.asarray(src, np.float32).reshape(1, -1)[:, s:e]
+        out = raw.copy()
+        out[:, s:e] = ref + gain * (raw[:, s:e] - ref)
+        return out
 
     def _neutral_xd(self):
         """A held-mouth x_d for batches that arrive before the LMDM emits."""
