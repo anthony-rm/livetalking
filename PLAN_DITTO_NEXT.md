@@ -771,6 +771,49 @@ Latency split, measured: edge-tts 1.6-2.1 s, `/human` returns in ~0 ms (TTS is
 async), first frame ~2-3 s after connect (model load), and the ~2 s of silence
 backlog is now gone.
 
+# PLAN_DITTO_NEXT — resume point (session of 2026-11-16/17)
+
+## Landed and VERIFIED this session (local, real edge-tts)
+
+**TTS first-audio latency — root cause found and FIXED.** The 1.6-2.1 s
+"edge-tts time" was two delays: a fixed ~1.5 s server-side TTFF (measured
+invariant across 6-char and 135-char sentences; NOT the connect — WSS
+handshake is 0.1-0.2 ms and connector reuse does not help), plus the wrapper
+buffering the WHOLE sentence before the avatar heard anything (`async for`
+wrote mp3 into input_stream; decode ran only after turn.end). Large-sentence
+cost was therefore full-sentence-length, on top of the 1.5 s.
+
+Fix (tts/edge.py, incremental rewrite): per-sentence PyAV mp3 decoder +
+16 kHz resampler; each network packet is decoded and pushed to
+put_audio_frame AS IT ARRIVES. Resampler tail flushed once after __main
+returns, last chunk tagged 'end'. Numerically equivalent to soundfile+
+resampy (190080 == 190080 samples, max|d| 0.018, ends exact). Measured with
+a stub avatar parent: first chunk at the avatar **1494 ms** after
+txt_to_audio() starts (was: full-sentence; the 53-char sentence returned at
+2226 ms — the 0.7 s gap is what the fix saves on a short reply, growing
+with sentence length). Barge-in holds: PAUSE mid-run emits 0 chunks.
+Tests: tests/test_edge_tts_incremental.py (3, real service). Full unit
+suite: 156 passed.
+
+Bugs caught writing it (both in the dead-code category, recorded so nobody
+"fixes" them back): (1) `idx` was absolute across _push_decoded calls while
+`stream` is REBUILT per packet from `pending` — emission stalled after the
+second packet (6 chunks total instead of 593). idx must be local to each
+call; `state.idx` remains an absolute emitted-frame counter only. (2) The
+`end`-tag condition must be `< 2*chunk` REMAINING, not `< chunk` (a
+condition the loop guard makes unreachable).
+
+**latest-ditto default.** `avatar_id: latest-ditto` now resolves at
+connect/warm-start to the newest COMPLETE ditto artifact
+(`detect.latest_ditto_avatar()` scans by ditto.json mtime; incomplete trees
+never win). `app.resolve_avatar_id()` expands ''/'latest-ditto' and raises
+loudly when no ditto artifact exists. The eager warm start now resolves the
+backend from the resolved avatar's artifacts (same rule as connect), so a
+stale `model:` line can no longer load the wrong weights. config.yaml
+ships `model: ditto, avatar_id: latest-ditto`. Warning: the WARM-START
+backend switch means a box config still pinned to musetalk + a ditto
+default avatar now warms DITTO at boot — intended, but know it changed.
+
 ## NEXT SESSION TASKS (in order)
 
 1. **Raise render throughput past 25 fps — the only real fix for "laggy audio".**

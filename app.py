@@ -157,6 +157,26 @@ def worker_remote() -> bool:
     return False
 
 
+def resolve_avatar_id(avatar_id: str | None) -> str:
+    """Resolve a concrete avatar id, expanding the 'latest-ditto' sentinel.
+
+    '' and 'latest-ditto' mean "the most recently completed ditto artifact".
+    Resolved at call time (not boot), so a newly generated avatar becomes the
+    default without a restart. Raises loudly when the sentinel names no
+    artifact rather than silently falling back to a stale id.
+    """
+    if avatar_id and avatar_id != 'latest-ditto':
+        return avatar_id
+    from avatars import detect as avatar_detect
+    latest = avatar_detect.latest_ditto_avatar()
+    if latest is None:
+        raise RuntimeError(
+            "avatar_id %r resolves to no avatar: data/avatars holds no "
+            "complete ditto artifact (ditto.json + f_s/ + x_s_info/ + "
+            "full_imgs/)" % (avatar_id or 'latest-ditto',))
+    return latest
+
+
 def resolve_avatar_backend(avatar_id: str) -> str:
     """Pick the model that can actually drive `avatar_id`.
 
@@ -378,6 +398,7 @@ def _build_avatar_session_locked(sessionid:str, params:dict)->BaseAvatar:
     opt_this.sessionid = sessionid
 
     avatar_id = params.get('avatar', opt.avatar_id) or opt.avatar_id
+    avatar_id = resolve_avatar_id(avatar_id)
     opt_this.avatar_id = avatar_id
     ref_audio = params.get('refaudio','') #音色
     ref_text = params.get('reftext','')
@@ -466,10 +487,15 @@ def main():
         # the race simply waits on the same lock the lazy path uses.
         def _eager_load():
             try:
-                backend = getattr(opt, 'model', '') or default_backend()
-                avatar_id = getattr(opt, 'avatar_id', '') or None
-                ensure_model_loaded(backend, avatar_id)
-                logger.info('[model] warm start complete')
+                # The resolved avatar's artifacts decide the backend, exactly
+                # as at connect: with a latest-ditto default against a stale
+                # `model:` line, trusting opt.model would load the wrong
+                # weights and then fail loading the payload against them.
+                avatar_id = resolve_avatar_id(
+                    getattr(opt, 'avatar_id', '') or None)
+                ensure_model_loaded(resolve_avatar_backend(avatar_id),
+                                     avatar_id)
+                logger.info('[model] warm start complete (%s)', avatar_id)
             except Exception:
                 logger.exception('[model] warm start failed; will retry on '
                                  'first connect')

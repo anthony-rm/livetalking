@@ -224,5 +224,70 @@ def test_no_marker_means_no_ditto(tmp_path):
     assert detect.detect_backend("dt", root=str(tmp_path))[0] == "wav2lip"
 
 
+# ─── latest-ditto sentinel (detect.latest_ditto_avatar) ─────────────────────
+def _touch_marker(root, avatar_id, mtime):
+    """Set the ditto.json mtime so scan order is deterministic."""
+    os.utime(os.path.join(root, avatar_id, "ditto.json"), (mtime, mtime))
+
+
+def test_latest_ditto_picks_the_newest_complete_artifact(tmp_path):
+    _ditto_avatar(tmp_path, "a"); _touch_marker(tmp_path, "a", 1000)
+    _ditto_avatar(tmp_path, "b"); _touch_marker(tmp_path, "b", 2000)
+    _ditto_avatar(tmp_path, "c"); _touch_marker(tmp_path, "c", 1500)
+    assert detect.latest_ditto_avatar(root=str(tmp_path)) == "b"
+
+
+def test_latest_ditto_skips_incomplete_artifacts(tmp_path):
+    """A half-generated avatar must never become the default."""
+    _ditto_avatar(tmp_path, "old"); _touch_marker(tmp_path, "old", 1000)
+    _ditto_avatar(tmp_path, "new", complete=False)
+    _touch_marker(tmp_path, "new", 2000)
+    assert detect.latest_ditto_avatar(root=str(tmp_path)) == "old"
+
+
+def test_latest_ditto_ignores_non_ditto_avatars(tmp_path):
+    """Marker-less trees (musetalk/wav2lip) are not candidates."""
+    _avatar(tmp_path, "ms", latents=True, mask=True)
+    os.utime(os.path.join(tmp_path, "ms", "latents.pt"), (3000, 3000))
+    assert detect.latest_ditto_avatar(root=str(tmp_path)) is None
+
+
+def test_latest_ditto_on_empty_or_missing_root(tmp_path):
+    empty = tmp_path / "none"
+    empty.mkdir()
+    assert detect.latest_ditto_avatar(root=str(empty)) is None
+    assert detect.latest_ditto_avatar(root=str(tmp_path / "absent")) is None
+
+
+# ─── latest-ditto sentinel (app.resolve_avatar_id) ──────────────────────────
+def test_sentinel_resolves_to_the_newest_ditto(app_module):
+    app_mod, _opt, root = app_module
+    _ditto_avatar(root, "dd1"); _touch_marker(root, "dd1", 1000)
+    _ditto_avatar(root, "dd2"); _touch_marker(root, "dd2", 2000)
+    assert app_mod.resolve_avatar_id("latest-ditto") == "dd2"
+
+
+def test_empty_avatar_id_means_latest_ditto(app_module):
+    app_mod, _opt, root = app_module
+    _ditto_avatar(root, "dd1")
+    assert app_mod.resolve_avatar_id("") == "dd1"
+    assert app_mod.resolve_avatar_id(None) == "dd1"
+
+
+def test_explicit_avatar_id_passes_through(app_module):
+    app_mod, _opt, root = app_module
+    _ditto_avatar(root, "dd1")
+    _avatar(root, "ms", latents=True, mask=True)
+    assert app_mod.resolve_avatar_id("ms") == "ms"
+    assert app_mod.resolve_avatar_id("dd1") == "dd1"
+
+
+def test_sentinel_without_ditto_artifacts_raises_loudly(app_module):
+    app_mod, _opt, root = app_module
+    _avatar(root, "ms", latents=True, mask=True)
+    with pytest.raises(RuntimeError, match="no complete ditto artifact"):
+        app_mod.resolve_avatar_id("latest-ditto")
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

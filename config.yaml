@@ -13,9 +13,10 @@ r: 10
 # There is no remote worker any more: the app is installed on the GPU box and a
 # browser reaches it over an SSH tunnel (`ssh -L 8010:127.0.0.1:8010`).
 # `model` is the default backend; the avatar's own artifacts still decide which
-# backend actually loads.
-model: musetalk
-avatar_id: anthony007
+# backend actually loads. `avatar_id: latest-ditto` picks the most recently
+# generated complete ditto artifact at connect/warm-start time.
+model: ditto
+avatar_id: latest-ditto
 # benchmark_batchsize.py (M2 Air, fp16): bs8=22.5fps  bs16=17.7fps  bs32=14.0fps
 batch_size: 8
 

@@ -26,6 +26,10 @@ from typing import Optional, Tuple
 # detection rules below are explicit.
 KNOWN_BACKENDS = ("musetalk", "wav2lip", "ultralight", "ditto")
 
+# Payload subdirectories a ditto artifact must carry alongside ditto.json for
+# the backend to load it. Shared by detection and by the latest-artifact scan.
+DITTO_PAYLOAD = ("f_s", "x_s_info", "full_imgs")
+
 DEFAULT_AVATAR_ROOT = "./data/avatars"
 
 
@@ -67,7 +71,7 @@ def detect_backend(avatar_id: str,
     # loader needs), so its presence is authoritative.
     has_ditto_json = os.path.exists(os.path.join(path, "ditto.json"))
     if has_ditto_json:
-        missing = [p for p in ("f_s", "x_s_info", "full_imgs")
+        missing = [p for p in DITTO_PAYLOAD
                    if not os.path.exists(os.path.join(path, p))]
         if missing:
             return "ditto", (f"found ditto.json but missing {', '.join(missing)} "
@@ -105,3 +109,29 @@ def detect_backend(avatar_id: str,
 def detect_backend_or_none(avatar_id: str,
                            root: str | None = None) -> Optional[str]:
     return detect_backend(avatar_id, root)[0]
+
+
+def latest_ditto_avatar(root: str | None = None) -> Optional[str]:
+    """The most recently completed ditto artifact under `root`, or None.
+
+    Completeness is judged by the same rule detect_backend() applies: marker
+    present and every payload dir listed in DITTO_PAYLOAD — so a partially
+    generated avatar never wins the scan. "Latest" is the marker's own mtime
+    (written last, at the very end of genavatar), not the directory's.
+    """
+    root = root or DEFAULT_AVATAR_ROOT
+    if not os.path.isdir(root):
+        return None
+    best_id, best_mtime = None, -1.0
+    for name in os.listdir(root):
+        marker = os.path.join(root, name, "ditto.json")
+        try:
+            if not all(os.path.exists(os.path.join(root, name, d))
+                       for d in DITTO_PAYLOAD):
+                continue
+            mtime = os.path.getmtime(marker)
+        except OSError:
+            continue
+        if mtime > best_mtime:
+            best_id, best_mtime = name, mtime
+    return best_id
