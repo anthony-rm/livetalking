@@ -959,7 +959,7 @@ run the suite; ship to box; visual check.
 
 ## Key file paths (Mac)
 
-- Plan: ~/Projets/livetalking/PLAN_DITTO.md (Phases §9)
+- Plan: ~/Projets/livetalking/docs/plans/ditto-architecture.md (Phases §9)
 - Skill: livetalking (loaded; references/ditto.md has all upstream contracts)
 - Scratch harnesses: ~/.hermes/cache/scratch/ditto/ (probe_backend_chain.py,
   make_cfg_gpu.py, run_gpu_cudnn.py, phase1_gate.py, fetch_trt_lane.py,

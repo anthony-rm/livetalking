@@ -3,7 +3,7 @@
 Turns a raw talking-head clip into a clean, standardized vertical (9:16) base
 video that LiveTalking's avatar generators (`genavatar.py` for wav2lip /
 musetalk) consume unchanged. See `docs/intent/avatar-video-preprocessing.md`
-for the confirmed intent and `tasks/plan.md` for the build plan.
+for the confirmed intent and `docs/plans/enhance-tool/plan.md` for the build plan.
 
 ## Status (Task 4 — enhancement)
 

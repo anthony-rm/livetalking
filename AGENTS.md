@@ -17,8 +17,10 @@ existed to split the app from a second CUDA box; that split is gone.
    and video enhance run in this process. Do not reintroduce a mode toggle, a
    worker address, or a "where should this run" branch: there is one answer.
 3. **The serving port must not be exposed to the network.** `app.py` binds
-   `0.0.0.0` today; when running on a shared or firewalled host, bind loopback
-   and tunnel in. Never add a firewall rule for the app port.
+   `--bind`, whose default is already `127.0.0.1` (`config.py:110`); the
+   constructor binds `opt.bind`, not a literal `0.0.0.0`. Never pass
+   `--bind 0.0.0.0` on a shared or firewalled host, and never add a firewall
+   rule for the app port.
 
 ## Run / test
 
@@ -27,13 +29,14 @@ existed to split the app from a second CUDA box; that split is gone.
   different venv without torch/cv2. `LT_PYTHON` overrides the interpreter path.
 - Restart with `./restart.sh`; run it backgrounded, then poll
   `curl http://localhost:<port>/api/model/status`.
-- Tests: `pytest tests/` with the same pinned interpreter. Some suites
-  (`firefox_check.py`, `webrtc_smoke.py`, `smoke_test.py`, `fps_probe.py`,
-  `media_check.py`, `admin_*_ui.py`, `kill_*_live.py`, `firefox_mdns_pref.py`)
-  are live-server or live-browser checks, not unit tests — pass `--ignore=` for
-  each, or pytest will block waiting on a server that is not running.
-  `tests/test_audio_pacing.py` asserts a 50 Hz delivery rate and fails on a
-  loaded machine; treat its failures as flaky, not regressions.
+- Tests: `pytest tests/` with the same pinned interpreter. The live-server and
+  live-browser scripts under `tests/` (`firefox_check.py`, `webrtc_smoke.py`,
+  `smoke_test.py`, `fps_probe.py`, `media_check.py`, `admin_*_ui.py`,
+  `kill_*_live.py`, `firefox_mdns_pref.py`) carry no `test_` prefix, so plain
+  `pytest tests/` never collects them — the `--ignore=` flags seen in older
+  notes are redundant, not required. `tests/test_audio_pacing.py` asserts a
+  50 Hz delivery rate and fails on macOS regardless of load (timer/condvar
+  granularity); it is a platform limitation, not a flake and not a regression.
 - On WSL2, `nvidia-smi` lives at `/usr/lib/wsl/lib/nvidia-smi` and is not on the
   non-interactive PATH; `LD_LIBRARY_PATH` must include `/usr/lib/wsl/lib` or
   torch reports `cuda.is_available() == False` with no other symptom.
@@ -43,8 +46,10 @@ existed to split the app from a second CUDA box; that split is gone.
 - `app.py` — server, session creation, model lifecycle (`model_state`,
   `ensure_model_loaded`, `unload_model`, `restart_app`); `_AVATAR_MODULES` maps
   `--model` to its module.
-- `registry.py` — `@register(category, name)` / `create(...)`; categories
-  `stt, llm, tts, avatar, output`.
+- `registry.py` — `@register(category, name)` / `create(...)`; the categories
+  actually used are `avatar`, `tts` and `streamout` (streams register as
+  `streamout`, not `output` — `base_avatar.py:136` is the only `create` call
+  for transports). `stt` and `llm` have no registrations in-tree.
 - `avatars/base_avatar.py` — `BaseAvatar` pipeline (TTS thread, ASR worker,
   inference thread, frame processor). Subclasses implement `inference_batch`,
   `paste_back_frame`, optional `get_avatar_length`. `paste_back_frame` is the
@@ -55,7 +60,8 @@ existed to split the app from a second CUDA box; that split is gone.
 - `server/routes.py`, `server/avatar_routes.py`, `server/enhance_routes.py` —
   HTTP API; pages in `web/` (single English UI, no `-en` twins).
 - `tools/enhance/` — RVM matting + Real-ESRGAN + GFPGAN base-video pipeline.
-- `docs/` — `avatar-studio.md`, `api.md`, `admin_api.md`, `virtualcam_guide.md`.
+- `docs/` — `avatar-studio.md`, `api.md`, `admin_api.md`, `virtualcam_guide.md`,
+  and `docs/plans/` (the plan index — read `docs/plans/README.md` first).
 
 ## Conventions
 

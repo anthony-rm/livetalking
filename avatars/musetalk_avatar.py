@@ -58,9 +58,18 @@ def load_model():
     # load model weights
     vae, unet, pe = load_all_model(device=device)
     timesteps = torch.tensor([0], device=device)
-    pe = pe.half().to(device)
-    vae.vae = vae.vae.half().to(device)
-    unet.model = unet.model.half().to(device)
+    # fp16 only where it is actually accelerated. On CPU it is emulated in
+    # software — orders of magnitude slower than fp32, and the reason a
+    # generation that takes seconds can run for minutes (see the same guard
+    # in genavatar.py).
+    if device.type in ('cuda', 'mps'):
+        pe = pe.half().to(device)
+        vae.vae = vae.vae.half().to(device)
+        unet.model = unet.model.half().to(device)
+    else:
+        pe = pe.to(device)
+        vae.vae = vae.vae.to(device)
+        unet.model = unet.model.to(device)
     # Initialize audio processor and Whisper model
     audio_processor = Audio2Feature(model_path="./models/whisper")
     return vae, unet, pe, timesteps, audio_processor

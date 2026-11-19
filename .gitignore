@@ -37,11 +37,15 @@ gfpgan/weights/
 venv/
 
 # Local planning / working notes (agent scratch, not part of the product)
-PLAN.md
-tasks/
+# Anchored: macOS matches these case-insensitively, so an unanchored PLAN.md
+# would also swallow docs/plans/*/plan.md.
+/PLAN.md
+/tasks/
 
 # Thesis / research materials (private academic work, never commit)
 /thesis/
+# Same rule for the thesis plan: it names the student ID, advisor and school.
+docs/plans/thesis/
 
 # Notebook / editor scratch
 .ipynb_checkpoints/
