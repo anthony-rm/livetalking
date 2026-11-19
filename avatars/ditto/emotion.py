@@ -74,3 +74,55 @@ def emotion_name(value: Optional[EmotionValue]) -> str:
     if isinstance(value, list):
         return "+".join(EMOTIONS[int(v)] for v in value)
     return EMOTIONS[int(value)]
+
+
+def one_hot_vectors(indices: List[int], scale: float = 8.0) -> np.ndarray:
+    """Upstream's ``_get_emo_avg``: one-hot * scale, softmaxed.
+
+    Reproduced here (rather than imported) because it lives in the vendored
+    Ditto core, which is only on the GPU box. ``scale=8`` makes a single label
+    99.77% one-hot, so a label is already near the model's maximum input
+    amplitude — there is no "louder" one-hot to reach for.
+
+    Softmax is written out (upstream uses ``scipy.special.softmax``) because
+    this module loads on machines with no scipy: it is a three-line function
+    and the dependency would buy nothing.
+    """
+    logits = np.zeros(len(EMOTIONS), dtype=np.float32)
+    for i in indices:
+        logits[int(i)] = scale
+    e = np.exp(logits - logits.max())
+    return (e / e.sum()).astype(np.float32)
+
+
+def emotion_vector(value: EmotionValue, gain: float = 1.0) -> np.ndarray:
+    """The ``(1, 8)`` conditioning vector for ``value``, optionally amplified.
+
+    ``gain`` steers along the neutral->label axis, in the softmax's own
+    probability space:
+
+        gain 0 -> the neutral vector (label has no effect at all)
+        gain 1 -> exactly what upstream feeds the model (unchanged)
+        gain 2 -> twice the distance from neutral
+
+    This is the honest place to turn emotion up. The one-hot itself has no
+    headroom (see ``one_hot_vectors``), whereas the effect a label has on the
+    render is proportional to how far its vector sits from neutral — doubling
+    that distance asks the motion model for a stronger reading of the same
+    label without inventing a ninth class.
+
+    Negative gain flips the label (fear at -1 is the mirror image of fear), so
+    values below 0 are rejected: that is a different experiment, not a louder
+    one.
+    """
+    if value is None:
+        raise ValueError("emotion_vector needs a concrete emotion, not None")
+    if gain < 0:
+        raise ValueError(f"emotion gain must be >= 0, got {gain}")
+    idxs = ([int(v) for v in value] if isinstance(value, (list, tuple))
+            else [int(value)])
+    target = one_hot_vectors(idxs)
+    if gain == 1.0:
+        return target.reshape(1, 8)
+    neutral = one_hot_vectors([EMOTION_INDEX["neutral"]])
+    return (neutral + gain * (target - neutral)).reshape(1, 8).astype(np.float32)

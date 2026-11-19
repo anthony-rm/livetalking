@@ -23,21 +23,27 @@ from server import routes
 class FakeSession:
     def __init__(self, emotion=None, supports=True):
         self._emotion = emotion
+        self._gain = 1.0
         if supports:
             self.set_emotion = self._set   # attribute presence IS the capability
             self.current_emotion = self._current
 
-    def _set(self, value):
+    def _set(self, value, gain=None):
         # The real DittoReal.set_emotion parses through
         # `avatars.ditto.emotion.parse_emotion`, which raises on an unknown
         # label; the route's job is only to surface that as a JSON error.
         from avatars.ditto.emotion import parse_emotion
+        if gain is not None:
+            if gain < 0:
+                raise ValueError(f"emotion gain must be >= 0, got {gain}")
+            self._gain = gain
         self._emotion = parse_emotion(value)
         return self._emotion
 
     def _current(self):
         from avatars.ditto.emotion import emotion_name
-        return emotion_name(self._emotion)
+        name = emotion_name(self._emotion)
+        return name if self._gain == 1.0 else f"{name}@{self._gain:g}"
 
 
 class FakeRequest:
@@ -140,6 +146,44 @@ def test_set_emotion_on_a_backend_without_support_is_a_clean_error(monkeypatch):
         FakeRequest(body={"sessionid": "abc", "emotion": "happy"}))))
     assert out["code"] != 0
     assert "ditto" in out["msg"]
+
+
+# ─── gain (strength) ──────────────────────────────────────────────────────
+def test_gain_travels_from_the_body_to_the_session(one_session):
+    """The route must forward `gain`; a silent drop would look like a weak
+    emotion with no error anywhere."""
+    data = body_of(run(routes.set_emotion(
+        FakeRequest(body={"sessionid": "abc", "emotion": "happy",
+                          "gain": 2.0}))))["data"]
+    assert one_session._gain == 2.0
+    assert data["emotion"] == "happy@2"
+
+
+def test_omitting_gain_keeps_the_current_strength(one_session):
+    """Re-aiming a mood must not silently reset its strength to 1."""
+    run(routes.set_emotion(FakeRequest(
+        body={"sessionid": "abc", "emotion": "happy", "gain": 3.0})))
+    data = body_of(run(routes.set_emotion(
+        FakeRequest(body={"sessionid": "abc", "emotion": "angry"}))))["data"]
+    assert one_session._gain == 3.0
+    assert data["emotion"] == "angry@3"
+
+
+def test_negative_gain_is_rejected(one_session):
+    out = body_of(run(routes.set_emotion(
+        FakeRequest(body={"sessionid": "abc", "emotion": "happy",
+                          "gain": -1.0}))))
+    assert out["code"] != 0
+    assert ">= 0" in out["msg"]
+
+
+def test_emotions_route_publishes_the_gain_presets(no_sessions):
+    """The UI builds its strength control from this, not from hardcoded
+    numbers in the HTML."""
+    data = body_of(run(routes.emotions(FakeRequest())))["data"]
+    assert data["gain"]["default"] == 1.0
+    assert 1.0 in data["gain"]["presets"]
+    assert max(data["gain"]["presets"]) > 1.0
 
 
 if __name__ == "__main__":

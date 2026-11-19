@@ -167,12 +167,17 @@ POST /set_emotion
 |------|------|------|------|
 | `sessionid` | 是 | string | 会话 ID |
 | `emotion` | 是 | string/int/list | 表情名或 0-7 索引；索引数组为软混合；`null` 恢复默认 |
+| `gain` | 否 | float | 表情强度。`1`（默认）为上游原始向量；`2` 为距离 neutral 两倍；`0` 归零。省略则保持当前强度 |
 
 **响应**:
 
 ```json
-{ "code": 0, "msg": "ok", "data": { "emotion": "happy" } }
+{ "code": 0, "msg": "ok", "data": { "emotion": "happy@2" } }
 ```
+
+`data.emotion` 在强度不为 1 时带 `@强度` 后缀，界面据此点亮对应强度按钮。
+
+**关于 `gain` 的实测结论**（重要）: 该参数沿 neutral→label 轴缩放 8 维条件向量，实测对画面的影响很小（盒子上同一音频、同一种子下平均仅 1.07 倍，部分表情甚至略降）。原因是一维 one-hot 经 `softmax(one_hot*8)` 已达 99.77%，继续放大只会把其它维推向负概率——分布之外，模型没见过。真正的强度旋钮在 `guidance_weight`（`MotionDecoder.guided_forward` 的 `weight`，上游 2），它是整段渲染的全局参数而非逐表情参数，因此未暴露在 HTTP 接口上；离线实验用 `scripts/ditto/emotion_lab.py --guidance`。
 
 非 ditto 后端返回 `emotion is only supported by the ditto backend`。
 

@@ -708,6 +708,7 @@ class DittoReal(BaseAvatar):
         self._idle_xd: Optional[dict] = None
         self._mask_cache: Optional[np.ndarray] = None
         self._emo_override = None   # session-sticky emotion (set_emotion)
+        self._emo_gain = 1.0        # emotion strength; 1 = upstream one-hot
         self._idle_tick = 0       # idle-lane frame counter (see idle_frame)
         self._idle_cache: Dict[int, np.ndarray] = {}   # rendered idle crops
         self._idle_failed: Optional[str] = None   # throttles the idle warning
@@ -830,7 +831,7 @@ class DittoReal(BaseAvatar):
                     self._stage_n = 0
 
     # ─── emotion ──────────────────────────────────────────────────────────
-    def set_emotion(self, value):
+    def set_emotion(self, value, gain: Optional[float] = None):
         """Session-sticky emotion override; ``None`` clears to the cfg default.
 
         Returns the parsed value (index / list of indices / None) so callers
@@ -838,15 +839,26 @@ class DittoReal(BaseAvatar):
         thread; value may be a name (``"happy"``), an index, or a list of
         indices (upstream averages a list into one soft target). Invalid
         input raises ValueError, which the route surfaces.
+
+        ``gain`` scales how hard the label reads: 1 is upstream, 2 is twice
+        the distance from neutral, 0 neutralizes it. ``None`` keeps the
+        current gain so a mood can be re-aimed without restating its strength.
         """
         parsed = ditto_emotion.parse_emotion(value)
+        if gain is not None:
+            gain = float(gain)
+            if gain < 0:
+                raise ValueError(f"emotion gain must be >= 0, got {gain}")
+            self._emo_gain = gain
         # The LMDM consumer runs on the inference thread; a plain attribute
         # write is atomic enough for one writer (HTTP) + one reader (render).
         self._emo_override = parsed
         return parsed
 
     def current_emotion(self) -> str:
-        return ditto_emotion.emotion_name(self._emo_override)
+        name = ditto_emotion.emotion_name(self._emo_override)
+        gain = getattr(self, "_emo_gain", 1.0)
+        return name if gain == 1.0 else f"{name}@{gain:g}"
 
     # ─── audio features ────────────────────────────────────────────────────
     def _make_feat_fn(self):
@@ -877,7 +889,7 @@ class DittoReal(BaseAvatar):
             # one utterance boundary at most, so take the mode (most common
             # tag; None counts as a candidate so pure-None stays None).
             w_emos = self._emo_rows[self._local_idx:self._local_idx + seq]
-            emo = self._window_emotion(w_emos)
+            emo = self._conditioning_emotion(w_emos)
             cond = self.ch(window, self._global_idx, emo=emo)
             if torch.is_tensor(cond):
                 cond = cond.cpu().numpy()
@@ -942,6 +954,27 @@ class DittoReal(BaseAvatar):
                 self._last_emo = emo
             return emo
         return self._emo_override
+
+    def _conditioning_emotion(self, w_emos: list):
+        """What ``ConditionHandler.__call__(emo=)`` receives for this window.
+
+        A bare label at gain 1 (the default) is passed through untouched, so
+        the default path is byte-identical to before gain existed. Otherwise
+        the vector is precomputed at this session's gain: the handler accepts
+        an ``(m, 8)`` array directly, which is the only way to express a gain
+        without editing vendored code.
+        """
+        gain = getattr(self, "_emo_gain", 1.0)
+        chosen = self._window_emotion(w_emos)
+        if gain == 1.0 or chosen is None:
+            return chosen
+        try:
+            return ditto_emotion.emotion_vector(chosen, gain=gain)
+        except ValueError:
+            logger.warning("[ditto] emotion gain %s not applicable to %r; "
+                           "using upstream vector", gain, chosen)
+            self._emo_gain = 1.0
+            return chosen
 
     def _neutral_xd(self):
         """A held-mouth x_d for batches that arrive before the LMDM emits."""

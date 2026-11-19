@@ -96,6 +96,125 @@ def encode_mp4(frames_dir: str, out_path: str, fps: int = 25) -> None:
     container.close()
 
 
+def render_motion(stitch, warp, dec, x_s_lst, f_s_lst, n, render_edge,
+                  motion, n_frames):
+    """Render a (T, 265) motion array to CHW crops via stitch+warp+decode.
+
+    Split out from `render_setting` so a caller can transform the MOTION before
+    it is rendered — which is what pose exaggeration needs.
+    """
+    out = []
+    for i in range(min(n_frames, motion.shape[0])):
+        fidx = i % n
+        xd = _arr2dic(motion[i])
+        x_s, x_d = stitch(x_s_lst[fidx], xd)
+        f3d = warp(f_s_lst[fidx][None], x_s, x_d).reshape(
+            256, render_edge, render_edge)
+        img = dec(np.stack([f3d])) if getattr(dec, "batch", None) else dec(f3d)
+        if hasattr(img, "detach"):
+            img = img.detach().cpu().numpy()
+        img = np.asarray(img)
+        if img.ndim == 4:
+            img = img[0]
+        out.append(img)
+    return out
+
+
+#: Channel layout of the 265-dim motion vector (upstream `_cvt_LP_motion_info`,
+#: kp dropped). Emotion is measured to live almost entirely in the POSE groups:
+#: on the box, |label - neutral| averaged yaw 0.084 / roll 0.042 / pitch 0.038
+#: against exp 0.0016. So "exaggerate the emotion" means "exaggerate the pose
+#: delta", and touching `exp` would invent a smile the model never offered.
+MOTION_GROUPS = (("scale", 1), ("pitch", 66), ("yaw", 66), ("roll", 66),
+                 ("t", 3), ("exp", 63))
+
+
+def _motion_spans():
+    s = 0
+    for name, size in MOTION_GROUPS:
+        yield name, s, s + size
+        s += size
+
+
+def _arr2dic(vec):
+    """(265,) -> the per-key dict MotionStitch consumes (upstream's reshape)."""
+    dic = {}
+    for name, s, e in _motion_spans():
+        v = vec[s:e].reshape(1, -1)
+        dic[name] = (v + 1) if name == "scale" else v
+    return dic
+
+
+def exaggerate_pose(motion, neutral, gain, groups=("pitch", "yaw", "roll", "t")):
+    """Amplify the label's pose deviation from neutral, leaving `exp` alone.
+
+    `gain` 1 returns `motion` untouched. The delta is added back to NEUTRAL, so
+    the result is always a pose the model could plausibly have produced — this
+    is a stronger reading of the same label, not a new one.
+    """
+    if gain == 1.0 or neutral is None:
+        return motion
+    out = motion.copy()
+    for name, s, e in _motion_spans():
+        if name in groups:
+            out[:, s:e] = neutral[:, s:e] + gain * (motion[:, s:e]
+                                                    - neutral[:, s:e])
+    return out
+
+
+def sample_motion(cond, a2m, stitch, padded, seq, valid, n_frames, emo, seed):
+    """Run the LMDM over `padded` and return the (T, 265) motion array.
+
+    This is the half of the lab that costs GPU time; splitting it from the
+    render is what lets a caller transform motion (pose exaggeration) before a
+    single frame is drawn.
+
+    `a2m` returns the ACCUMULATED motion history, not just this pass's frames:
+    after pass k the result is (1, 80 + k*valid, 265). The new frames are the
+    last `valid` columns, and taking them by a pointer (the online lane's law)
+    is what keeps a long history from being re-read as if it were the current
+    window.
+    """
+    import torch
+    if seed is not None:
+        torch.manual_seed(seed)
+
+    res_seq = None
+    valid_start = None
+    collected = []
+    stitch.d0 = None
+    for w_start in range(0, padded.shape[0] - seq + 1, valid):
+        c = cond(padded[w_start:w_start + seq], w_start, emo=emo)
+        if hasattr(c, "cpu"):
+            c = c.cpu().numpy()
+        if c.ndim == 2:
+            c = c[None]
+        res_seq = a2m(c, res_seq)
+        if valid_start is None:
+            # First pass latches d0 only (upstream's own behaviour).
+            valid_start = res_seq.shape[1] - a2m.fuse_length
+            stitch.d0 = a2m.cvt_fmt(res_seq[0:1])[0]
+            continue
+        collected.append(res_seq[:, valid_start:valid_start + valid])
+        valid_start += valid
+        if sum(x.shape[1] for x in collected) >= n_frames:
+            break
+    if not collected:
+        return None
+    return np.concatenate(collected, axis=1)[0][:n_frames]
+
+
+def render_setting(cond, a2m, stitch, warp, dec, x_s_lst, f_s_lst, n,
+                   render_edge, padded, seq, valid, n_frames, emo, seed):
+    """Sample then render one setting; kept for callers that want it in one go."""
+    motion = sample_motion(cond, a2m, stitch, padded, seq, valid, n_frames,
+                           emo, seed)
+    if motion is None:
+        return []
+    return render_motion(stitch, warp, dec, x_s_lst, f_s_lst, n, render_edge,
+                         motion, n_frames)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -109,6 +228,20 @@ def main() -> int:
     ap.add_argument("--render-size", type=int, default=512, choices=(256, 512))
     ap.add_argument("--steps", type=int, default=50,
                     help="LMDM sampling steps (offline default 50)")
+    ap.add_argument("--gain", type=float, default=1.0,
+                    help="emotion strength: 1 = upstream, 2 = twice the "
+                         "distance from neutral, 0 = neutral")
+    ap.add_argument("--guidance", type=float, default=None,
+                    help="override LMDM guidance_weight (upstream 2). "
+                         "Applies to the WHOLE render, not per emotion.")
+    ap.add_argument("--pose-gain", type=float, default=1.0,
+                    help="exaggerate the label's POSE deviation from neutral "
+                         "(pitch/yaw/roll/t). 1 = as the model produced it. "
+                         "This is the knob that actually changes how strong an "
+                         "emotion reads")
+    ap.add_argument("--seed", type=int, default=1234,
+                    help="sampling-noise seed; fixed by default so two "
+                         "settings differ by emotion, not by noise")
     args = ap.parse_args()
 
     os.environ.setdefault("DITTO_RENDER_SIZE", str(args.render_size))
@@ -173,6 +306,21 @@ def main() -> int:
                  ch_info=None, overall_ctrl_info=dkw["overall_ctrl_info"])
     warp, dec = model["warp"], model["dec"]
 
+    if args.guidance is not None:
+        # `MotionDecoder.guided_forward` extrapolates away from the
+        # unconditioned prediction: out = unc + (cond - unc) * weight, with
+        # weight=2 upstream. Raising it is the standard way to make a
+        # conditional signal assert itself harder; it is a whole-render knob,
+        # and high values cost motion naturalness before they cost identity.
+        inner = getattr(a2m.lmdm, "model", None)
+        if inner is None or not hasattr(inner, "guidance_weight"):
+            print("error: this LMDM build exposes no guidance_weight",
+                  file=sys.stderr)
+            return 2
+        inner.guidance_weight = float(args.guidance)
+        print(f"[lab] guidance_weight={inner.guidance_weight} "
+              f"(upstream 2)", flush=True)
+
     # Features once: every setting speaks the SAME audio, which is what makes
     # a grid comparable — only the emotion vector changes.
     sr = 16000
@@ -214,55 +362,42 @@ def main() -> int:
             [body, np.zeros((need - body.shape[0], body.shape[1]), np.float32)])
     padded = np.concatenate([np.zeros((seq, body.shape[1]), np.float32), body])
 
+    # Motion is produced once per setting and then rendered, rather than
+    # rendered inline: pose exaggeration transforms the motion array before any
+    # frame is drawn, so a `--pose-gain` run and a plain run share one sampler.
+    neutral_motion = None
+    if args.pose_gain != 1.0:
+        neutral_label = de.emotion_name(de.EMOTION_INDEX["neutral"])
+        print(f"[lab] sampling neutral motion (pose reference for "
+              f"--pose-gain {args.pose_gain:g})", flush=True)
+        neutral_motion = sample_motion(
+            cond, a2m, stitch, padded, seq, valid, n_frames,
+            de.emotion_vector(de.EMOTION_INDEX["neutral"], gain=args.gain),
+            args.seed)
+
     for si, labels in enumerate(settings):
         idxs = [de.EMOTION_INDEX[l.lower()] for l in labels
                 if l.lower() in de.EMOTION_INDEX]
         if not idxs:
             print(f"[lab] skip unknown setting {labels}", flush=True)
             continue
-        emo = idxs[0] if len(idxs) == 1 else idxs
+        base = idxs[0] if len(idxs) == 1 else idxs
         label = "+".join(labels)
-        print(f"[lab] {si+1}/{len(settings)} {label} -> emo={emo}", flush=True)
+        # The conditioning vector, not the label: `emotion_vector` is where
+        # gain is applied, so the render and the API agree on what "gain" means.
+        emo = de.emotion_vector(base, gain=args.gain)
+        print(f"[lab] {si+1}/{len(settings)} {label} -> "
+              f"{de.emotion_name(base)} vec_gain={args.gain:g} "
+              f"pose_gain={args.pose_gain:g}", flush=True)
 
-        out_crops = []
-        res_seq = None      # fresh per setting: no carry-over between settings
-        # `a2m` returns the ACCUMULATED motion history, not just this pass's
-        # frames: after pass k the result is (1, 80 + k*valid, 265). The new
-        # frames are the last `valid` columns, and taking them by a pointer
-        # (the online lane's law) is what keeps a long history from being
-        # re-read as if it were the current window.
-        valid_start = None
-        for w_start in range(0, padded.shape[0] - seq + 1, valid):
-            window = padded[w_start:w_start + seq]
-            c = cond(window, w_start, emo=emo)
-            if hasattr(c, "cpu"):
-                c = c.cpu().numpy()
-            if c.ndim == 2:
-                c = c[None]
-            res_seq = a2m(c, res_seq)
-            if valid_start is None:
-                # First pass latches d0 only (upstream's own behaviour).
-                valid_start = res_seq.shape[1] - a2m.fuse_length
-                stitch.d0 = a2m.cvt_fmt(res_seq[0:1])[0]
-                continue
-            new = a2m.cvt_fmt(res_seq[:, valid_start:valid_start + valid])
-            valid_start += valid
-            for xd in new:
-                if len(out_crops) >= n_frames:
-                    break
-                fidx = len(out_crops) % n
-                x_s, x_d = stitch(x_s_lst[fidx], xd)
-                f3d = warp(f_s_lst[fidx][None], x_s, x_d).reshape(
-                    256, render_edge, render_edge)
-                img = dec(np.stack([f3d])) if getattr(dec, "batch", None) else dec(f3d)
-                if hasattr(img, "detach"):
-                    img = img.detach().cpu().numpy()
-                img = np.asarray(img)
-                if img.ndim == 4:
-                    img = img[0]
-                out_crops.append(img)
-            if len(out_crops) >= n_frames:
-                break
+        motion = sample_motion(cond, a2m, stitch, padded, seq, valid,
+                               n_frames, emo, args.seed)
+        if motion is None:
+            print(f"[lab] {label}: no motion produced", flush=True)
+            continue
+        motion = exaggerate_pose(motion, neutral_motion, args.pose_gain)
+        out_crops = render_motion(stitch, warp, dec, x_s_lst, f_s_lst, n,
+                                  render_edge, motion, n_frames)
 
         if not out_crops:
             print(f"[lab] {label}: no frames produced", flush=True)
@@ -285,7 +420,8 @@ def main() -> int:
             canvas = np.zeros((h + 28, w, 3), np.uint8)
             canvas[:28] = (28, 28, 28)
             canvas[28:] = c8
-            cv2.putText(canvas, f"{label}  [{emo}]", (6, 20),
+            cv2.putText(canvas, f"{label}  pose={args.pose_gain:g}",
+                        (6, 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1,
                         cv2.LINE_AA)
             cv2.imwrite(os.path.join(tmp, f"{si:03d}_{i:05d}.png"), canvas)

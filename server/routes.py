@@ -103,6 +103,10 @@ async def set_emotion(request):
     Accepts an emotion name ("happy", "surprise", ...), an index 0..7, a list
     of indices (soft mix), or null to clear back to the default. For the
     ditto backend this drives the motion model's 8-class conditioning.
+
+    `gain` scales how hard the label reads: 1 (default) is upstream's vector,
+    2 is twice the distance from neutral, 0 neutralizes it. Omitting it keeps
+    the current gain, so re-aiming a mood does not restate its strength.
     Other backends answer `unsupported`.
     """
     try:
@@ -114,7 +118,8 @@ async def set_emotion(request):
         if not hasattr(avatar_session, 'set_emotion'):
             return json_error("emotion is only supported by the ditto backend")
         try:
-            avatar_session.set_emotion(params.get('emotion'))
+            avatar_session.set_emotion(params.get('emotion'),
+                                       gain=params.get('gain'))
         except ValueError as e:
             return json_error(str(e))
         return json_ok(data={"emotion": avatar_session.current_emotion()})
@@ -130,12 +135,14 @@ async def emotions(request):
     order lives in exactly one place (`avatars/ditto/emotion.py`, which mirrors
     upstream's `_get_emo_avg`). A backend without emotion support reports
     `supported: false` and the UI disables its controls instead of failing on
-    the first click.
+    the first click. `gains` is the knob the UI exposes as strength presets.
     """
     try:
         from avatars.ditto.emotion import EMOTIONS
         data = {"emotions": list(EMOTIONS), "default": "neutral",
-                "supported": False, "current": None}
+                "supported": False, "current": None,
+                "gain": {"default": 1.0, "min": 0.0, "max": 4.0,
+                         "presets": [1.0, 1.5, 2.0, 3.0]}}
         sessionid = request.query.get('sessionid', '')
         avatar_session = get_session(request, sessionid) if sessionid else None
         if avatar_session is not None and hasattr(avatar_session, 'set_emotion'):
