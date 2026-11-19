@@ -43,7 +43,9 @@ class FakeSession:
     def _current(self):
         from avatars.ditto.emotion import emotion_name
         name = emotion_name(self._emotion)
-        return name if self._gain == 1.0 else f"{name}@{self._gain:g}"
+        if self._emotion is None or self._gain == 1.0:
+            return name
+        return f"{name}@{self._gain:g}"
 
 
 class FakeRequest:
@@ -184,6 +186,16 @@ def test_emotions_route_publishes_the_gain_presets(no_sessions):
     assert data["gain"]["default"] == 1.0
     assert 1.0 in data["gain"]["presets"]
     assert max(data["gain"]["presets"]) > 1.0
+
+
+def test_a_strength_with_no_label_reads_as_plain_default(one_session):
+    """Clearing the emotion must not leave "default@2" on screen: strength
+    with nothing to apply to is noise, and the box gate caught it doing so."""
+    run(routes.set_emotion(FakeRequest(
+        body={"sessionid": "abc", "emotion": "happy", "gain": 2.0})))
+    data = body_of(run(routes.set_emotion(
+        FakeRequest(body={"sessionid": "abc", "emotion": None}))))["data"]
+    assert data["emotion"] == "default"
 
 
 if __name__ == "__main__":

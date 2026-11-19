@@ -858,7 +858,11 @@ class DittoReal(BaseAvatar):
     def current_emotion(self) -> str:
         name = ditto_emotion.emotion_name(self._emo_override)
         gain = getattr(self, "_emo_gain", 1.0)
-        return name if gain == 1.0 else f"{name}@{gain:g}"
+        # No label means no strength to show: "default@2" would suggest the
+        # strength still applies to something, and it does not.
+        if self._emo_override is None or gain == 1.0:
+            return name
+        return f"{name}@{gain:g}"
 
     # ─── audio features ────────────────────────────────────────────────────
     def _make_feat_fn(self):

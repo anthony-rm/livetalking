@@ -162,6 +162,28 @@ def exaggerate_pose(motion, neutral, gain, groups=("pitch", "yaw", "roll", "t"))
     return out
 
 
+def reset_sampler(a2m, cond, dkw):
+    """Return `a2m` to its post-`setup` state before a new setting is sampled.
+
+    `Audio2Motion` carries state ACROSS calls that makes renders order-dependent:
+    `clip_idx` drives the `fix_kp_cond` reset cadence, and the caller passes the
+    accumulated `res_kp_seq` back in. Sampling setting 2 after setting 1 in one
+    process therefore does not reproduce what setting 2 does in its own process.
+
+    That is not a theoretical concern: a neutral render (where pose gain is a
+    mathematical no-op) differed by 7.4/255 between two sweep runs, which
+    invalidates any per-label comparison drawn from one process. Resetting here
+    makes a single-process sweep equivalent to N separate runs.
+    """
+    a2m.setup(cond.x_s_info_0,
+              fix_kp_cond=dkw["fix_kp_cond"],
+              fix_kp_cond_dim=dkw["fix_kp_cond_dim"],
+              v_min_max_for_clip=dkw["v_min_max_for_clip"],
+              smo_k_d=dkw["smo_k_d"], overlap_v2=10,
+              sampling_timesteps=getattr(a2m, "sampling_timesteps", 50)
+              or 50, online_mode=False)
+
+
 def sample_motion(cond, a2m, stitch, padded, seq, valid, n_frames, emo, seed):
     """Run the LMDM over `padded` and return the (T, 265) motion array.
 
@@ -310,11 +332,18 @@ def main() -> int:
         # `MotionDecoder.guided_forward` extrapolates away from the
         # unconditioned prediction: out = unc + (cond - unc) * weight, with
         # weight=2 upstream. Raising it is the standard way to make a
-        # conditional signal assert itself harder; it is a whole-render knob,
-        # and high values cost motion naturalness before they cost identity.
+        # conditional signal assert itself harder.
+        #
+        # It is only reachable in the PYTORCH build. This box loads TensorRT
+        # (`model_type == 'tensorrt'`), where the guidance weight is frozen
+        # into the compiled engine: there is no attribute to set, and quietly
+        # ignoring --guidance would report a sweep that never happened.
         inner = getattr(a2m.lmdm, "model", None)
+        mtype = getattr(a2m.lmdm, "model_type", "?")
         if inner is None or not hasattr(inner, "guidance_weight"):
-            print("error: this LMDM build exposes no guidance_weight",
+            print(f"error: this LMDM is '{mtype}', which exposes no "
+                  f"guidance_weight (TensorRT bakes it into the engine). "
+                  f"Run the pytorch build, or skip --guidance.",
                   file=sys.stderr)
             return 2
         inner.guidance_weight = float(args.guidance)
@@ -370,11 +399,11 @@ def main() -> int:
         neutral_label = de.emotion_name(de.EMOTION_INDEX["neutral"])
         print(f"[lab] sampling neutral motion (pose reference for "
               f"--pose-gain {args.pose_gain:g})", flush=True)
+        reset_sampler(a2m, cond, dkw)
         neutral_motion = sample_motion(
             cond, a2m, stitch, padded, seq, valid, n_frames,
             de.emotion_vector(de.EMOTION_INDEX["neutral"], gain=args.gain),
             args.seed)
-
     for si, labels in enumerate(settings):
         idxs = [de.EMOTION_INDEX[l.lower()] for l in labels
                 if l.lower() in de.EMOTION_INDEX]
@@ -390,6 +419,7 @@ def main() -> int:
               f"{de.emotion_name(base)} vec_gain={args.gain:g} "
               f"pose_gain={args.pose_gain:g}", flush=True)
 
+        reset_sampler(a2m, cond, dkw)
         motion = sample_motion(cond, a2m, stitch, padded, seq, valid,
                                n_frames, emo, args.seed)
         if motion is None:
