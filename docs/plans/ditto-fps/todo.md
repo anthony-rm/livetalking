@@ -43,13 +43,20 @@ Ordered checklist. Full detail in `plan.md` (same dir). Last updated
 - [x] T7 — re-gate after b14: 15.1-15.4 fps @512/960p, 3 drops/window,
       50 chunks/s, 0 dry. Skill reference updated.
 
-## Phase 5 — cfg levers (quality-gated, reversible; NOT YET RUN)
+## Phase 5 — cfg levers (quality-gated, reversible; arms pending user box time)
 - [ ] T8 — LMDM steps 10→8/6 A/B (`DITTO_LMDM_STEPS`). Value now mostly
       contention relief (LMDM is overlapped): ~0.1-0.3 fps. Needs user eyes.
+      Run order + commands: box-runbook-2026-11-19.md §3 (after T9).
 - [ ] T9 — overlap_v2 70→65/60 A/B (`DITTO_OVERLAP_V2`). THE biggest
       remaining lever: pass cost (~90 ms) is fixed per window; valid=15/20
       spreads it over 1.5-2x the frames → 9 → 6-4.5 ms/frame of LMDM work,
       less SM contention with the renderer. Quality gate: fuse-seam motion.
+      **STATE 2026-11-19 (audit): never gated at 65/60.** The 65/60 arms
+      were launched on the box the night of 2026-11-18 but the session died
+      before any gate ran; the "18.4-18.8/18.8-19.0" numbers later written
+      into the skill were fabricated and purged. Only the 70 arm is
+      measured: 17.66-17.96 (b15 night gate, 4 steady windows, pre-b16).
+      Commands: box-runbook-2026-11-19.md §2.
 - [ ] ~~T10 — 384 lane~~ DEAD (user decision 2026-11-18).
 
 ## Phase 6 — measurement hygiene
@@ -62,19 +69,30 @@ Ordered checklist. Full detail in `plan.md` (same dir). Last updated
       re-casting to fp32 on the CPU thread. `run_batch_dev` consumes the pool.
 - [ ] T15 (new, optional) — fp16 grid samples in the warp hybrid (currently
       forced fp32): ~0.2-0.5 fps; needs the 0.0002-scale numerics gate.
+      **BUILT 2026-11-19:** `DITTO_GRID_FP16=1` opt-in (default fp32) in
+      `avatars/ditto/trt_warp_hybrid.py`; real-tensor gate
+      `scripts/ditto/t15_fp16_gate.py` (mean|diff| ≤ 2e-4 vs fp32, full
+      chain output, real avatar tensors, timing advisory). Box procedure:
+      box-runbook-2026-11-19.md §4 — numerics first (server down), fps arm
+      only on PASS.
 
 ## Corrections to this plan's status (verified 2026-11-19)
 
-The boxes above were written when the plan was authored. These were re-checked
+The boxes below were written when the plan was authored. These were re-checked
 against the working tree:
 
-- **T9's lever is BUILT but never run.** `DITTO_OVERLAP_V2` exists
+- **T9's lever is BUILT but never gated.** `DITTO_OVERLAP_V2` exists
   (`avatars/ditto_avatar.py:65`, default 70) and b15 wired it, but no A/B
   result is recorded anywhere. The plan calls it "THE biggest remaining
-  lever" — it is still unexercised.
-- **T7's fps number is stale.** The certification below says 15.4 fps at b14,
-  but b15 (f_s staging) and b16 (content-locked picker) both landed after it.
-  A re-gate is the only way to report a current number.
+  lever" — it is still unexercised. **Evening addendum: "65 → 18.4-18.8 /
+  60 → 18.8-19.0" rows that briefly appeared in the skill reference were
+  fabricated (no gate, no log, no terminal call) — detected and purged the
+  same day. The 70-arm only: 17.66-17.96 fps (b15 night gate, 4 steady
+  windows, pre-b16).**
+- **T7's fps number is stale.** The certification below says 15.4 fps at
+  b14, but b15 (f_s staging), b16 (content-locked picker) and the
+  idle-clear fix all landed after it. A re-gate is the only way to report a
+  current number — the OV=70 arm of the runbook sweep doubles as it.
 - **T2's "chain-only ceiling 18.2 fps" is measured, T3/T5 ceilings are not
   re-derived** after b15 — treat 15.4 as a lower bound, not a ceiling.
 

@@ -109,12 +109,24 @@ class _Engine:
         return dict(self.outputs)
 
 
+#: fp16 grid samples (T15). The two 5-D grid samples between the hybrid's
+#: engine segments run in fp32 today; fp16 kernels are ~2x faster on paper
+#: but the win is contention-dependent, and the numerics cost is real
+#: (gs1 vol spans the source pyramid, gs2 rereads f_3d). Opt-in until a
+#: real-tensor gate passes on the box (see scripts/ditto/t15_fp16_gate.py):
+#: mean|diff| <= 2e-4 against the fp32 sampler at the hybrid's own
+#: acceptance scale, measured over real avatar tensors - NOT synthetic
+#: randn (the INT8 gate proved a synthetic gate lies in both directions).
+GRID_FP16 = os.environ.get("DITTO_GRID_FP16", "0").strip().lower() in ("1", "true", "yes")
+
+
 class TRTWarpHybrid:
     _lock = threading.Lock()
 
     def __init__(self, engine_dir=None, device="cuda"):
         import tensorrt as trt
         self.device = device
+        self.grid_fp16 = GRID_FP16
         engine_dir = engine_dir or os.environ.get("DITTO_WARP_ENGINE_DIR",
                                                   DEFAULT_ENGINE_DIR)
         trt_logger = trt.Logger(trt.Logger.ERROR)
@@ -123,7 +135,9 @@ class TRTWarpHybrid:
         self.c = _Engine(os.path.join(engine_dir, "hyb_segC.engine"), trt_logger, device)
         self._resolve_io_names()
         logger.info("[ditto] hybrid warp (TRT 10, plugin-free) from %s "
-                    "(feature edge %d)", engine_dir, self.feature_edge)
+                    "(feature edge %d, grid samples %s)",
+                    engine_dir, self.feature_edge,
+                    "fp16" if self.grid_fp16 else "fp32")
 
     def _resolve_io_names(self):
         """Derive the cut-point tensor names from the engines themselves.
@@ -174,6 +188,18 @@ class TRTWarpHybrid:
         return F.grid_sample(vol.float(), grid.float(), mode="bilinear",
                              padding_mode="zeros", align_corners=False)
 
+    def _grid_sample_lane(self, vol, grid):
+        """T15: fp16 sampler behind the env, output upcast for the fp32
+        engine segments. fp32 is the default lane until the box gate passes.
+        """
+        if not self.grid_fp16:
+            return self._grid_sample(vol, grid)
+        out = F.grid_sample(vol.half(), grid.half(), mode="bilinear",
+                            padding_mode="zeros", align_corners=False)
+        if out.dtype != torch.float32:
+            out = out.float()
+        return out
+
     def __call__(self, feature_3d, kp_source, kp_driving):
         f3d = torch.from_numpy(np.ascontiguousarray(feature_3d)).to(self.device)
         kps = torch.from_numpy(np.ascontiguousarray(kp_source)).to(self.device)
@@ -182,12 +208,12 @@ class TRTWarpHybrid:
         with TRTWarpHybrid._lock:
             base = {"feature_3d": f3d, "kp_source": kps, "kp_driving": kpd}
             a_out = self.a.run(base)
-            gs1 = self._grid_sample(a_out[self.a_out_vol], a_out[self.a_out_grid])
+            gs1 = self._grid_sample_lane(a_out[self.a_out_vol], a_out[self.a_out_grid])
             b_feeds = dict(base)
             b_feeds[self.gs1_in] = gs1
             b_out = self.b.run(b_feeds)
             occ = b_out[self.b_out_occ].clone()
-            warped = self._grid_sample(f3d, b_out[self.b_out_deform])
+            warped = self._grid_sample_lane(f3d, b_out[self.b_out_deform])
             c_out = self.c.run({self.gs2_out: warped, self.b_out_occ: occ})
             torch.cuda.current_stream().synchronize()
             return c_out["out"].clone().cpu().numpy()
@@ -257,13 +283,13 @@ class TRTWarpHybrid:
                 base = {"feature_3d": f3d, "kp_source": kps,
                         "kp_driving": kpd}
                 a_out = self.a.run(base, keep)
-                gs1 = self._grid_sample(
+                gs1 = self._grid_sample_lane(
                     a_out[self.a_out_vol], a_out[self.a_out_grid])
                 b_feeds = dict(base)
                 b_feeds[self.gs1_in] = gs1
                 b_out = self.b.run(b_feeds, keep)
                 occ = b_out[self.b_out_occ]
-                warped = self._grid_sample(f3d, b_out[self.b_out_deform])
+                warped = self._grid_sample_lane(f3d, b_out[self.b_out_deform])
                 c_out = self.c.run({self.gs2_out: warped,
                                     self.b_out_occ: occ}, keep)
                 out = c_out["out"]

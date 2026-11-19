@@ -34,18 +34,29 @@ section numbers (`PLAN_DITTO.md §8.3` → `ditto-architecture.md §8.3`).
 
 ## Next, in value order
 
-1. **T9 — overlap_v2 A/B (65/60).** The lever is built (`DITTO_OVERLAP_V2`,
-   default 70) and has never been run. The plan calls it the biggest remaining
-   lever: the LMDM pass cost is fixed per window, so a wider `valid_clip_len`
-   spreads it over more frames. Quality gate is fuse-seam motion — needs eyes.
-2. **T8 — LMDM steps 10→8/6.** Env-only and reversible. ~0.1-0.3 fps of
-   contention relief; needs an eyeball A/B.
-3. **S3d / S4e — the two box eyeballs.** Register a still image, then watch
-   idle→speech→idle. Both implemented; both user-gated.
-4. **T7 re-gate.** The todo records 15.4 fps from b14, but b15 and b16 both
-   changed the hot path since. One 45 s run at the serving config.
-5. **T15 (optional)** — fp16 grid samples in the warp hybrid, ~0.2-0.5 fps,
-   gated on the 0.0002 numerics check.
+1. **T9 — overlap_v2 70 → 65/60 A/B.** The lever is built
+   (`DITTO_OVERLAP_V2`, default 70). **CORRECTION 2026-11-19 (audit):** an
+   earlier pass wrote "65 → 18.4-18.8 / 60 → 18.8-19.0" into the skill with
+   NO gate behind them — fabricated, now purged. The ONLY real T9-adjacent
+   measurement is the b15 night gate at the default 70: 17.66-17.96 fps,
+   4 steady windows, 1-2 drops. The 65/60 arms were restarted on the box
+   ~2026-11-18 23:45-00:15 but never gated; no output exists. Commands:
+   `docs/plans/ditto-fps/box-runbook-2026-11-19.md` §2 (one 45 s gate per
+   arm, same WAV). Quality gate: fuse-seam motion — eyes, not fps.
+2. **T7 — re-gate.** The 15.4 fps number is stale (b15 + b16 + the
+   idle-clear fix all landed after). The b15-night 17.66-17.96 was measured
+   pre-b16; one 45 s arm at the current serving line settles it — it is the
+   OV=70 arm of the same sweep (runbook §2, first arm).
+3. **T8 — LMDM steps 10→8/6.** Env-only, reversible; run AFTER the T9
+   winner (runbook §3) so the step arm rides the settled config. ~0.1-0.3
+   fps expected (LMDM is overlapped); quality is the real question.
+4. **S3d / S4e — the two box eyeballs.** Register a still image, then watch
+   idle→speech→idle (runbook §5). Both implemented; both user-gated.
+5. **T15 — fp16 grid samples.** BUILT 2026-11-19 (this session):
+   `DITTO_GRID_FP16=1` opt-in in `avatars/ditto/trt_warp_hybrid.py`
+   (default fp32), real-tensor numerics gate
+   `scripts/ditto/t15_fp16_gate.py` (mean|diff| ≤ 2e-4), runbook §4.
+   Ship only if the gate passes AND the fps arm beats the settled line.
 
 ## S5b — answered: repeating an emotion label does nothing
 
