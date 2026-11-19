@@ -710,6 +710,7 @@ class DittoReal(BaseAvatar):
         self._emo_override = None   # session-sticky emotion (set_emotion)
         self._idle_tick = 0       # idle-lane frame counter (see idle_frame)
         self._idle_cache: Dict[int, np.ndarray] = {}   # rendered idle crops
+        self._idle_failed: Optional[str] = None   # throttles the idle warning
         self._last_emo = None     # for the [emo] trace log
         self._emo_trace_n = 0     # throttle: log the first N tagged windows
         self._xd_trace_n = 0      # throttle for the [xd] pick trace
@@ -1061,10 +1062,23 @@ class DittoReal(BaseAvatar):
         i = slot % _IDLE_LOOP
         crop = self._idle_cache.get(i)
         if crop is None:
+            t0 = time.perf_counter()
             crop = self._render_idle(i)
             if crop is None:
+                if getattr(self, "_idle_failed", None) != "render":
+                    self._idle_failed = "render"
+                    logger.warning("[ditto] idle lane disabled: render returned "
+                                   "nothing (still frame kept)")
                 return None
             self._idle_cache[i] = crop
+            if len(self._idle_cache) == 1:
+                logger.info("[ditto] idle lane on: first frame %.0f ms, "
+                            "loop %d frames, reuse %d",
+                            (time.perf_counter() - t0) * 1000,
+                            _IDLE_LOOP, _IDLE_REUSE)
+            elif len(self._idle_cache) == _IDLE_LOOP:
+                logger.info("[ditto] idle loop complete (%d frames cached); "
+                            "idle playback is now GPU-free", _IDLE_LOOP)
         try:
             return self.paste_back_frame(crop, 0)
         except Exception:
