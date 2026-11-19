@@ -29,11 +29,18 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
+
 import sys
 import tempfile
 
 import numpy as np
+
+# Run as a script from anywhere: the repo root must be importable so
+# `avatars.ditto.*` resolves (the app always runs with it as cwd).
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
+os.chdir(_REPO)
 
 
 def parse_pairs(spec: str):
@@ -59,6 +66,34 @@ def load_audio(path: str, sr: int = 16000) -> np.ndarray:
 DEFAULT_GRID = ("neutral,happy,happy+surprise,happy+neutral,"
                 "sad,sad+neutral,surprise,angry,angry+disgust,"
                 "fear,disgust,contempt")
+
+
+def encode_mp4(frames_dir: str, out_path: str, fps: int = 25) -> None:
+    """Encode the PNG sequence with PyAV (the box has no ffmpeg binary).
+
+    PyAV is already a hard dependency of this app (the TTS and WebRTC paths use
+    it), so reusing it here keeps the lab runnable on the box as-is.
+    """
+    import av
+    files = sorted(f for f in os.listdir(frames_dir) if f.endswith(".png"))
+    if not files:
+        raise RuntimeError(f"no png frames in {frames_dir}")
+    import cv2
+    first = cv2.imread(os.path.join(frames_dir, files[0]))
+    h, w = first.shape[:2]
+    container = av.open(out_path, mode="w")
+    stream = container.add_stream("libx264", rate=fps)
+    stream.width, stream.height = w, h
+    stream.pix_fmt = "yuv420p"
+    stream.options = {"crf": "18", "preset": "medium"}
+    for name in files:
+        bgr = cv2.imread(os.path.join(frames_dir, name))
+        frame = av.VideoFrame.from_ndarray(bgr, format="bgr24")
+        for packet in stream.encode(frame):
+            container.mux(packet)
+    for packet in stream.encode():
+        container.mux(packet)
+    container.close()
 
 
 def main() -> int:
@@ -156,6 +191,7 @@ def main() -> int:
     feats = np.concatenate(rows, axis=0) if rows else np.zeros((1, 1024), np.float32)
     n_frames = int(min(len(feats), args.seconds * 25))
     feats = feats[:max(n_frames, 1)]
+    n_frames = len(feats)
     print(f"[lab] {len(feats)} feature rows ({len(feats)/25:.1f}s of audio)",
           flush=True)
 
@@ -163,9 +199,20 @@ def main() -> int:
     written = 0
     seq = a2m.seq_frames
     valid = a2m.valid_clip_len
-    # The model expects the audio to start with silence: upstream seeds
-    # overlap_v2 frames of zeros in front so the first fuse is aligned.
-    padded = np.concatenate([np.zeros((seq, feats.shape[1]), np.float32), feats])
+    # Two delays the loop must respect, both learned from a run that rendered
+    # NOTHING:
+    #   * upstream seeds `seq` frames of silence in front so the first fuse is
+    #     aligned, and
+    #   * the FIRST pass only latches d0, so at least one more pass must exist.
+    # A short clip (30 frames) is shorter than one window (80), leaving a
+    # single pass and therefore zero output. Pad the tail with silence until
+    # two full passes fit, and render only the first `n_frames` results.
+    body = feats
+    need = seq + 2 * valid
+    if body.shape[0] < need:
+        body = np.concatenate(
+            [body, np.zeros((need - body.shape[0], body.shape[1]), np.float32)])
+    padded = np.concatenate([np.zeros((seq, body.shape[1]), np.float32), body])
 
     for si, labels in enumerate(settings):
         idxs = [de.EMOTION_INDEX[l.lower()] for l in labels
@@ -179,6 +226,12 @@ def main() -> int:
 
         out_crops = []
         res_seq = None      # fresh per setting: no carry-over between settings
+        # `a2m` returns the ACCUMULATED motion history, not just this pass's
+        # frames: after pass k the result is (1, 80 + k*valid, 265). The new
+        # frames are the last `valid` columns, and taking them by a pointer
+        # (the online lane's law) is what keeps a long history from being
+        # re-read as if it were the current window.
+        valid_start = None
         for w_start in range(0, padded.shape[0] - seq + 1, valid):
             window = padded[w_start:w_start + seq]
             c = cond(window, w_start, emo=emo)
@@ -187,24 +240,28 @@ def main() -> int:
             if c.ndim == 2:
                 c = c[None]
             res_seq = a2m(c, res_seq)
-            if w_start == 0:
-                # First pass only latches d0 (upstream's own behaviour).
+            if valid_start is None:
+                # First pass latches d0 only (upstream's own behaviour).
+                valid_start = res_seq.shape[1] - a2m.fuse_length
                 stitch.d0 = a2m.cvt_fmt(res_seq[0:1])[0]
                 continue
-            new = a2m.cvt_fmt(res_seq[:, res_seq.shape[1] - valid:])
+            new = a2m.cvt_fmt(res_seq[:, valid_start:valid_start + valid])
+            valid_start += valid
             for xd in new:
-                if len(out_crops) >= len(feats):
+                if len(out_crops) >= n_frames:
                     break
                 fidx = len(out_crops) % n
                 x_s, x_d = stitch(x_s_lst[fidx], xd)
                 f3d = warp(f_s_lst[fidx][None], x_s, x_d).reshape(
                     256, render_edge, render_edge)
                 img = dec(np.stack([f3d])) if getattr(dec, "batch", None) else dec(f3d)
+                if hasattr(img, "detach"):
+                    img = img.detach().cpu().numpy()
                 img = np.asarray(img)
                 if img.ndim == 4:
                     img = img[0]
                 out_crops.append(img)
-            if len(out_crops) >= len(feats):
+            if len(out_crops) >= n_frames:
                 break
 
         if not out_crops:
@@ -213,9 +270,16 @@ def main() -> int:
 
         # Burn the label into a strip above each crop and write PNGs.
         import cv2
-        h, w = out_crops[0].shape[:2]
+        h, w = out_crops[0].shape[1:] if out_crops[0].shape[0] == 3 \
+            else out_crops[0].shape[:2]
         for i, crop in enumerate(out_crops):
-            c8 = crop.astype(np.uint8)
+            c8 = crop
+            # The decoder's contract is CHW (3, H, W); cv2 wants HWC BGR.
+            if c8.ndim == 3 and c8.shape[0] == 3:
+                c8 = np.transpose(c8, (1, 2, 0))
+            if c8.dtype != np.uint8:
+                c8 = np.clip(c8 * 255.0 if c8.max() <= 1.0 else c8,
+                             0, 255).astype(np.uint8)
             if c8.ndim == 3 and c8.shape[2] == 3:
                 c8 = cv2.cvtColor(c8, cv2.COLOR_RGB2BGR)
             canvas = np.zeros((h + 28, w, 3), np.uint8)
@@ -235,11 +299,7 @@ def main() -> int:
         print("error: nothing rendered", file=sys.stderr)
         return 1
 
-    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-framerate", "25",
-           "-pattern_type", "glob", "-i", os.path.join(tmp, "*.png"),
-           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", args.out]
-    print("[lab] " + " ".join(cmd), flush=True)
-    subprocess.run(cmd, check=True)
+    encode_mp4(tmp, args.out)
     print(f"[lab] wrote {args.out} ({written} frames)", flush=True)
     print(f"[lab] source pngs kept in {tmp}", flush=True)
     return 0
