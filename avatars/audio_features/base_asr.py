@@ -16,6 +16,7 @@
 ###############################################################################
 
 import time
+import os
 import numpy as np
 
 import queue
@@ -87,12 +88,53 @@ class BaseASR:
         self._tap_seq = getattr(self, "_tap_seq", 0) + 1
         frame.chunk_seq = self._tap_seq
         self.queue.put(frame)
+        self._drop_stale_idle()
         # LT_AVSYNC=drop lane: same chunk to the pacer's tap. Synthetic
         # silence never passes through put_audio_frame (callers pass real
         # TTS pcm), so the tap carries only speech. Eventpoints ride userdata
         # exactly as on the main path, and a small int16 copy is not made
         # here — the pacer converts per chunk at its own 50 Hz cadence.
         self.audio_tap_queue.put(frame)
+
+    def _drop_stale_idle(self) -> int:
+        """Discard synthetic-silence frames queued ahead of real speech.
+
+        Idle time floods ``output_queue`` with type=1 silence: the ASR worker
+        emits a batch every 20 ms run_step whether or not audio arrived, and
+        the inference thread drains them 2*batch_size at a time, so the queue
+        sits at its cap (``batch_size*4``) whenever nobody is talking.
+
+        In stretch mode that was invisible — the audio advanced with the
+        picture, so the whole idle batch played before speech started. In
+        drop mode the audio runs at arrival rate, so this queued silence is
+        no longer played out first: the picture walks it for ~0.8 s WHILE the
+        browser already hears the sentence, showing the registration frame
+        over live speech. Measured: 19-20 consecutive SILENT-branch frames
+        after speech onset, exactly one 20-chunk batch.
+
+        Only ``type == 1`` (synthetic) frames are removed, and only in drop
+        mode (stretch mode's pacing depends on that queue). Real speech is
+        never dropped; the survivors are re-queued in their original order.
+        """
+        if os.environ.get("LT_AVSYNC", "drop").strip().lower() == "stretch":
+            return 0
+        kept = []
+        dropped = 0
+        try:
+            while True:
+                f = self.output_queue.get_nowait()
+                if f.type == 1:
+                    dropped += 1
+                else:
+                    kept.append(f)
+        except queue.Empty:
+            pass
+        for f in kept:
+            try:
+                self.output_queue.put_nowait(f)
+            except queue.Full:
+                break
+        return dropped
 
     #return frame:audio pcm; type: 0-normal speak, 1-silence; eventpoint:custom event sync with audio
     def get_audio_frame(self)->AudioFrameData:        

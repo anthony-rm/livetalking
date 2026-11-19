@@ -272,3 +272,81 @@ def test_audio_out_queue_not_fed_in_drop_mode(monkeypatch):
         (np.full((2, 2), 1.0, np.float32), _speech_window(1.0), 0),
     ])
     assert stub.audio_out_queue.qsize() == 0
+
+
+# ─── stale idle silence ahead of speech ────────────────────────────────
+
+def _idle_chunks(n):
+    from avatars.base_avatar import AudioFrameData
+    z = np.zeros(320, np.float32)
+    return [AudioFrameData(data=z, type=1, userdata={}) for _ in range(n)]
+
+
+def _asr_with_output_queue(tmp_path=None):
+    """A BaseASR with a real output_queue, no model work."""
+    import os, sys, types
+    sys.path.insert(0, os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    from avatars.audio_features.base_asr import BaseASR
+
+    opt = types.SimpleNamespace(fps=25, batch_size=10, l=10, r=10)
+    asr = BaseASR.__new__(BaseASR)
+    asr.opt = opt
+    asr.batch_size = opt.batch_size
+    asr.chunk = 320
+    asr.queue = Queue()
+    asr.output_queue = Queue(maxsize=opt.batch_size * 4)
+    asr.audio_tap_queue = Queue()
+    asr._tap_seq = 0
+    return asr
+
+
+def test_stale_idle_silence_is_dropped_on_speech(monkeypatch):
+    """Idle floods output_queue with type=1 silence; the first real chunk
+    must clear it so the picture is not a source frame over live speech.
+
+    Measured live before the fix: 19-20 consecutive static frames lasting
+    ~1.5 s at the start of every sentence.
+    """
+    monkeypatch.setenv("LT_AVSYNC", "drop")
+    asr = _asr_with_output_queue()
+    for f in _idle_chunks(40):
+        asr.output_queue.put(f)
+
+    asr.put_audio_frame(np.full(320, 0.5, np.float32), {})
+
+    assert asr.output_queue.qsize() == 0, "idle silence was not cleared"
+
+
+def test_stale_idle_drop_keeps_real_audio(monkeypatch):
+    """Any real chunk already queued stays, in order — never dropped."""
+    monkeypatch.setenv("LT_AVSYNC", "drop")
+    asr = _asr_with_output_queue()
+    from avatars.base_avatar import AudioFrameData
+
+    asr.output_queue.put(_idle_chunks(1)[0])
+    r1 = AudioFrameData(data=np.full(320, 0.1, np.float32), type=0, userdata={})
+    r2 = AudioFrameData(data=np.full(320, 0.2, np.float32), type=0, userdata={})
+    asr.output_queue.put(r1)
+    asr.output_queue.put(_idle_chunks(1)[0])
+    asr.output_queue.put(r2)
+
+    asr.put_audio_frame(np.full(320, 0.9, np.float32), {})
+
+    kinds = []
+    while not asr.output_queue.empty():
+        kinds.append(asr.output_queue.get_nowait().type)
+    assert kinds == [0, 0], kinds
+
+
+def test_stretch_mode_keeps_idle_silence(monkeypatch):
+    """Stretch mode paces audio against the picture, so the backlog is not
+    visible there and must be left alone (old behaviour)."""
+    monkeypatch.setenv("LT_AVSYNC", "stretch")
+    asr = _asr_with_output_queue()
+    for f in _idle_chunks(5):
+        asr.output_queue.put(f)
+
+    asr.put_audio_frame(np.full(320, 0.5, np.float32), {})
+
+    assert asr.output_queue.qsize() == 5, "stretch mode must not purge"
